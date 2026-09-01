@@ -15,7 +15,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-openfamily}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./server/schema.sql:/docker-entrypoint-initdb.d/schema.sql
@@ -46,7 +46,7 @@ services:
       VAPID_SUBJECT: ${VAPID_SUBJECT}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
     ports:
-      - "3001:3001"
+      - "127.0.0.1:3001:3001"
     depends_on:
       postgres:
         condition: service_healthy
@@ -72,7 +72,7 @@ services:
     restart: unless-stopped
     logging: *default-logging
     ports:
-      - "3000:80"
+      - "127.0.0.1:3000:80"
     depends_on:
       server:
         condition: service_healthy
