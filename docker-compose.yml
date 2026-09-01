@@ -1,8 +1,15 @@
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   postgres:
     image: postgres:16-alpine
     container_name: openfamily-db
     restart: unless-stopped
+    logging: *default-logging
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-openfamily}
       POSTGRES_USER: ${POSTGRES_USER:-openfamily}
@@ -24,6 +31,7 @@ services:
       dockerfile: ./server/Dockerfile
     container_name: openfamily-server
     restart: unless-stopped
+    logging: *default-logging
     environment:
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
@@ -62,6 +70,7 @@ services:
         VITE_WS_URL: ${VITE_WS_URL:-}
     container_name: openfamily-client
     restart: unless-stopped
+    logging: *default-logging
     ports:
       - "3000:80"
     depends_on:
