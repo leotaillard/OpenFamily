@@ -23,6 +23,7 @@ import {
     WifiOff,
     Plug,
     PiggyBank,
+    LayoutDashboard,
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { Button } from '../ui/Button';
@@ -42,6 +43,7 @@ const navigation: { labelKey: string; href: string; icon: typeof Home; module?: 
     { labelKey: 'items.tasks', href: '/tasks', icon: CheckSquare },
     { labelKey: 'items.rewards', href: '/rewards', icon: PiggyBank, module: 'rewards' },
     { labelKey: 'items.calendar', href: '/calendar', icon: CalendarIcon },
+    { labelKey: 'items.board', href: '/board', icon: LayoutDashboard },
     { labelKey: 'items.planning', href: '/planning', icon: CalendarDays, module: 'planning' },
     { labelKey: 'items.recipes', href: '/recipes', icon: ChefHat, module: 'recipes' },
     { labelKey: 'items.meals', href: '/meal-planning', icon: UtensilsCrossed, module: 'meals' },

@@ -22,6 +22,7 @@ import Family from './pages/Family';
 import Settings from './pages/Settings';
 import Join from './pages/Join';
 import Integrations from './pages/Integrations';
+import FamilyBoard from './pages/FamilyBoard';
 
 function App() {
     const { isAuthenticated, loading, isModuleEnabled } = useAuth();
@@ -64,6 +65,12 @@ function App() {
     // Kiosk is a full-screen, chrome-less display — render it outside the Layout.
     if (location.pathname === '/kiosk') {
         return isModuleEnabled('kiosk') ? <Kiosk /> : <Navigate to="/" replace />;
+    }
+
+    // Family board (custom module) — same chrome-less treatment, so it can go
+    // fullscreen on the wall tablet like Kiosk.
+    if (location.pathname === '/board') {
+        return <FamilyBoard />;
     }
 
     return (
