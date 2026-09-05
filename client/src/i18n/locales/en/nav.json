@@ -11,7 +11,8 @@
     "budget": "Budget",
     "family": "Family",
     "integrations": "Integrations",
-    "settings": "Settings"
+    "settings": "Settings",
+    "board": "Family board"
   },
   "mobile": {
     "home": "Home",

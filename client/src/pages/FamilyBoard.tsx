@@ -4,20 +4,20 @@ import {
     Calendar, UtensilsCrossed, CheckSquare, Users, MapPin, Bus, Check, Undo2, Maximize2, Minimize2, X,
     Sun, CloudSun, Cloud, CloudRain, CloudSnow, CloudLightning, CloudFog, Settings as SettingsIcon, Search,
 } from 'lucide-react';
-import { addDays, format, startOfWeek } from 'date-fns';
+import { addDays, format, getISODay, startOfWeek } from 'date-fns';
 import { api } from '../lib/api';
 import { useWebSocketUpdates } from '../hooks/useWebSocketUpdates';
 import { useAuth } from '../contexts/AuthContext';
 import { intlLocale } from '../i18n/format';
-import { cn } from '../lib/utils';
-import { Dialog } from '../components/ui';
+import { cn, formatTime } from '../lib/utils';
+import { Dialog, Input } from '../components/ui';
 
 // Custom module for this family's fork — not part of upstream OpenFamily. Reuses
 // the existing appointments/tasks/meal-plans/planning APIs (read the same data
-// as the built-in Kiosk view) with a different layout: day/week toggle, and a
-// live public-transit widget for the family's own bus stop. Rendered outside
-// <Layout> (see App.tsx, same treatment as /kiosk) so it can go chrome-less
-// fullscreen on the wall tablet.
+// as the built-in Kiosk view) with a different layout: a day view plus three
+// grid views (3 jours / weekend / semaine), and a live public-transit widget
+// for the family's own bus stops. Rendered outside <Layout> (see App.tsx, same
+// treatment as /kiosk) so it can go chrome-less fullscreen on the wall tablet.
 
 interface Member { id: string; name: string; color: string }
 interface Appointment { id: string; title: string; start_time: string; end_time?: string; location?: string; family_members_data?: Member[] }
@@ -29,7 +29,13 @@ const MEAL_ORDER = ['Petit-déjeuner', 'Déjeuner', 'Dîner', 'Snack'];
 // Official TPF (Transports publics fribourgeois) line colors, sampled from their
 // 2026 network map (tpf.ch/…/Plan Agglo (Fribourg).pdf) — only the lines this
 // family actually uses so far; unlisted numbers just fall back to the neutral style.
-const BUS_LINE_COLORS: Record<string, string> = { '5': '#0492D2', '9': '#A32B9B' };
+// Keyed by line number AND scoped to TPF (checked against the departure's own
+// `operator` field before use) — a bare line number isn't unique across Swiss
+// transit operators, and stops added later via the settings panel could belong
+// to a different one.
+const TPF_LINE_COLORS: Record<string, string> = { '5': '#0492D2', '9': '#A32B9B' };
+const busLineColor = (b: Pick<BusDeparture, 'number' | 'operator'>): string | undefined =>
+    b.operator?.startsWith('TPF') ? TPF_LINE_COLORS[b.number] : undefined;
 const MEAL_SHORT_LABEL: Record<string, string> = { 'Petit-déjeuner': 'Déj.', 'Déjeuner': 'Midi', 'Dîner': 'Soir', Snack: 'Snack' };
 const ROW_LABEL_W = 72; // px — day label column, week view
 const ROW_SIDE_W = 130; // px — meals / tasks columns, week view
@@ -47,9 +53,14 @@ const withAlpha = (hex: string | undefined, alpha: number): string | undefined =
     const n = parseInt(hex.slice(1), 16);
     return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
 };
-const isoDay = (d: Date) => ((d.getDay() + 6) % 7) + 1; // Mon=1 … Sun=7
 const ymd = (d: Date) => format(d, 'yyyy-MM-dd');
-const hhmm = (iso: string) => new Intl.DateTimeFormat(intlLocale(), { hour: '2-digit', minute: '2-digit' }).format(new Date(iso));
+const hhmm = formatTime;
+// Push into a Map<K, V[]>, creating the array on first insert — the grouping
+// pattern used by every "group X by day" memo below.
+const push = <K, V>(map: Map<K, V[]>, key: K, value: V) => {
+    const list = map.get(key);
+    if (list) list.push(value); else map.set(key, [value]);
+};
 
 // 'HH:MM' or 'HH:MM:SS' → fractional hour (e.g. '14:30' → 14.5), clamped to the
 // visible 7h-22h grid so a block never renders outside it.
@@ -83,23 +94,19 @@ const layoutBlocks = (raw: RawBlock[]): LaidBlock[] => {
     const flushCluster = () => {
         if (cluster.length === 0) return;
         const laneEnds: number[] = [];
-        const withLanes: LaidBlock[] = [];
+        const withLane: (RawBlock & { lane: number })[] = [];
         for (const b of cluster) {
             let lane = laneEnds.findIndex((end) => end <= b.startHour);
             if (lane === -1) { lane = laneEnds.length; laneEnds.push(b.endHour); }
             else { laneEnds[lane] = b.endHour; }
-            withLanes.push({ ...b, lane, lanes: laneEnds.length });
+            withLane.push({ ...b, lane });
         }
-        const totalLanes = laneEnds.length;
-        for (const b of withLanes) result.push({ ...b, lanes: totalLanes });
+        for (const b of withLane) result.push({ ...b, lanes: laneEnds.length });
         cluster = [];
     };
 
     for (const b of sorted) {
-        if (cluster.length > 0 && b.startHour >= clusterEnd) {
-            flushCluster();
-            clusterEnd = -Infinity;
-        }
+        if (b.startHour >= clusterEnd) flushCluster();
         cluster.push(b);
         clusterEnd = Math.max(clusterEnd, b.endHour);
     }
@@ -160,7 +167,7 @@ const loadSettings = (): BoardSettings => {
     return DEFAULT_SETTINGS;
 };
 
-interface BusDeparture { time: string; to: string; number: string; minutesUntil: number; stationName: string }
+interface BusDeparture { time: string; to: string; number: string; operator: string; minutesUntil: number; stationName: string }
 
 const fetchBusTimes = async (stops: BusStopConfig[]): Promise<BusDeparture[]> => {
     const now = Date.now() / 1000;
@@ -169,13 +176,14 @@ const fetchBusTimes = async (stops: BusStopConfig[]): Promise<BusDeparture[]> =>
         try {
             const resp = await fetch(`https://transport.opendata.ch/v1/stationboard?id=${stop.stationId}&limit=30`);
             if (!resp.ok) return [];
-            const data = await resp.json() as { stationboard: Array<{ number: string; to: string; stop: { departureTimestamp: number } }> };
+            const data = await resp.json() as { stationboard: Array<{ number: string; to: string; operator: string; stop: { departureTimestamp: number } }> };
             return data.stationboard
                 .filter((entry) => stop.routes.some((r) => r.number === entry.number && r.to === entry.to))
                 .map((entry) => ({
                     time: new Date(entry.stop.departureTimestamp * 1000).toISOString(),
                     to: entry.to,
                     number: entry.number,
+                    operator: entry.operator,
                     stationName: stop.stationName,
                     minutesUntil: Math.max(0, Math.round((entry.stop.departureTimestamp - now) / 60)),
                 }));
@@ -217,17 +225,64 @@ const weatherIcon = (code: number, isDay: boolean, className: string): React.Rea
     return <Cloud className={className} />;
 };
 
+// Heading used by every card in the day view (icon + label), pulled out since
+// the same markup was repeated for Rendez-vous / Qui est où / À faire / Repas.
+const SectionTitle: React.FC<{ icon: React.ReactNode; children: React.ReactNode; tight?: boolean }> = ({ icon, children, tight }) => (
+    <h2 className={cn('flex items-center gap-2.5 font-serif text-h2', tight ? 'mb-3' : 'mb-4')}>
+        {icon} {children}
+    </h2>
+);
+
+// A debounced-search text field + result list, shared by the settings panel's
+// bus-stop and weather-city pickers (same search-then-pick shape, different
+// data source). `results` is only shown once 2+ characters are typed.
+function SearchPicker<T>({ value, onChange, placeholder, results, getKey, renderResult, onPick }: {
+    value: string;
+    onChange: (v: string) => void;
+    placeholder: string;
+    results: T[];
+    getKey: (item: T) => string;
+    renderResult: (item: T) => React.ReactNode;
+    onPick: (item: T) => void;
+}) {
+    return (
+        <>
+            <div className="relative">
+                <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <Input value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} className="pl-9" />
+            </div>
+            {value.trim().length >= 2 && (
+                results.length === 0 ? (
+                    <p className="px-1 text-caption text-muted-foreground">Aucun résultat.</p>
+                ) : (
+                    <div className="divide-y divide-border overflow-hidden rounded-input border border-border">
+                        {results.map((item) => (
+                            <button key={getKey(item)} type="button" onClick={() => onPick(item)} className="flex w-full items-center gap-2 px-3 py-2.5 text-left active:bg-surface-2">
+                                {renderResult(item)}
+                            </button>
+                        ))}
+                    </div>
+                )
+            )}
+        </>
+    );
+}
+
 type ViewMode = 'day' | '3days' | 'weekend' | 'week';
 
 const FamilyBoard: React.FC = () => {
     const { isModuleEnabled } = useAuth();
+    const mealsEnabled = isModuleEnabled('meals');
+    const planningEnabled = isModuleEnabled('planning');
     const [mode, setMode] = useState<ViewMode>('day');
     const [appointments, setAppointments] = useState<Appointment[]>([]);
     const [tasks, setTasks] = useState<Task[]>([]);
     const [meals, setMeals] = useState<MealPlan[]>([]);
     const [planning, setPlanning] = useState<PlanningEntry[]>([]);
-    const [buses, setBuses] = useState<BusDeparture[] | null>(null);
-    const [busError, setBusError] = useState(false);
+    // null = not loaded yet, 'error' = last refresh failed (previous list, if
+    // any, is discarded rather than shown stale — a failed poll should read as
+    // "unknown", not silently keep displaying a departure that may be long gone).
+    const [buses, setBuses] = useState<BusDeparture[] | 'error' | null>(null);
     const [doneTasks, setDoneTasks] = useState<{ id: string; title: string }[]>([]);
     const [isFullscreen, setIsFullscreen] = useState(false);
     const [now, setNow] = useState(new Date());
@@ -296,8 +351,8 @@ const FamilyBoard: React.FC = () => {
         }
     };
 
-    useEffect(() => { void loadAll(); }, [mode]);
     useEffect(() => {
+        void loadAll();
         const id = setInterval(() => void loadAll(), 60_000);
         return () => clearInterval(id);
     }, [mode]);
@@ -306,10 +361,10 @@ const FamilyBoard: React.FC = () => {
     useWebSocketUpdates('meal-plans', () => void loadAll());
     useWebSocketUpdates('planning', () => void loadAll());
 
-    // Bus times — refresh every 30s, independent of the day/week toggle.
+    // Bus times — refresh every 30s, independent of the view-mode toggle.
     useEffect(() => {
         const load = () => {
-            fetchBusTimes(settings.busStops).then((b) => { setBuses(b); setBusError(false); }).catch(() => setBusError(true));
+            fetchBusTimes(settings.busStops).then(setBuses).catch(() => setBuses('error'));
         };
         load();
         const id = setInterval(load, 30_000);
@@ -447,19 +502,14 @@ const FamilyBoard: React.FC = () => {
 
     const apptsByDay = useMemo(() => {
         const map = new Map<string, Appointment[]>();
-        for (const a of appointments) {
-            const key = a.start_time.slice(0, 10);
-            (map.get(key) ?? map.set(key, []).get(key)!).push(a);
-        }
+        for (const a of appointments) push(map, a.start_time.slice(0, 10), a);
         for (const list of map.values()) list.sort((a, b) => a.start_time.localeCompare(b.start_time));
         return map;
     }, [appointments]);
 
     const mealsByDay = useMemo(() => {
         const map = new Map<string, MealPlan[]>();
-        for (const m of meals) {
-            (map.get(m.date) ?? map.set(m.date, []).get(m.date)!).push(m);
-        }
+        for (const m of meals) push(map, m.date, m);
         for (const list of map.values()) list.sort((a, b) => MEAL_ORDER.indexOf(a.meal_type) - MEAL_ORDER.indexOf(b.meal_type));
         return map;
     }, [meals]);
@@ -468,70 +518,83 @@ const FamilyBoard: React.FC = () => {
         const map = new Map<string, Task[]>();
         for (const t of tasks) {
             if (t.is_completed || !t.due_date) continue;
-            const key = t.due_date.slice(0, 10);
-            (map.get(key) ?? map.set(key, []).get(key)!).push(t);
+            push(map, t.due_date.slice(0, 10), t);
         }
         return map;
     }, [tasks]);
 
     const planningByDay = useMemo(() => {
         const map = new Map<number, PlanningEntry[]>();
-        for (const p of planning) {
-            (map.get(p.day_of_week) ?? map.set(p.day_of_week, []).get(p.day_of_week)!).push(p);
-        }
+        for (const p of planning) push(map, p.day_of_week, p);
         for (const list of map.values()) list.sort((a, b) => a.start_time.localeCompare(b.start_time));
         return map;
     }, [planning]);
 
-    // Week grid: rendez-vous + horaire (qui est où) merged into one spanning
+    // Grid modes: rendez-vous + horaire (qui est où) merged into one spanning
     // timeline per day — each block covers its real start→end duration, laid
-    // out side-by-side when several overlap (see layoutBlocks above).
-    const blocksForDay = (d: Date): LaidBlock[] => {
-        const key = ymd(d);
-        const raw: RawBlock[] = [];
-        for (const a of apptsByDay.get(key) || []) {
-            const start = toFractionalHour(a.start_time.slice(11, 16));
-            const end = a.end_time ? toFractionalHour(a.end_time.slice(11, 16)) : Math.min(GRID_END, start + 1);
-            if (end <= GRID_START || start >= GRID_END || end <= start) continue;
-            const members = a.family_members_data || [];
-            raw.push({
-                id: a.id,
-                type: 'rdv',
-                chipLabel: `${hhmm(a.start_time)} ${a.title}`,
-                title: a.title,
-                timeLabel: a.end_time ? `${hhmm(a.start_time)}–${hhmm(a.end_time)}` : hhmm(a.start_time),
-                meta: [a.location, members.map((m) => m.name).join(', ') || undefined].filter(Boolean).join(' · ') || undefined,
-                color: members[0]?.color,
-                startHour: start,
-                endHour: end,
-            });
+    // out side-by-side when several overlap (see layoutBlocks above). Memoized
+    // per visible day: this runs on every clock tick otherwise (the 15s "now"
+    // update re-renders the whole page), redoing the same sort/cluster for
+    // days whose data hasn't changed.
+    const blocksByDay = useMemo(() => {
+        const map = new Map<string, LaidBlock[]>();
+        for (const d of gridDays) {
+            const key = ymd(d);
+            const raw: RawBlock[] = [];
+            for (const a of apptsByDay.get(key) || []) {
+                const start = toFractionalHour(a.start_time.slice(11, 16));
+                const end = a.end_time ? toFractionalHour(a.end_time.slice(11, 16)) : Math.min(GRID_END, start + 1);
+                if (end <= GRID_START || start >= GRID_END || end <= start) continue;
+                const members = a.family_members_data || [];
+                raw.push({
+                    id: a.id,
+                    type: 'rdv',
+                    chipLabel: `${hhmm(a.start_time)} ${a.title}`,
+                    title: a.title,
+                    timeLabel: a.end_time ? `${hhmm(a.start_time)}–${hhmm(a.end_time)}` : hhmm(a.start_time),
+                    meta: [a.location, members.map((m) => m.name).join(', ') || undefined].filter(Boolean).join(' · ') || undefined,
+                    color: members[0]?.color,
+                    startHour: start,
+                    endHour: end,
+                });
+            }
+            if (planningEnabled) {
+                for (const p of planningByDay.get(getISODay(d)) || []) {
+                    const start = toFractionalHour(p.start_time);
+                    const end = toFractionalHour(p.end_time);
+                    if (end <= GRID_START || start >= GRID_END || end <= start) continue;
+                    const firstName = p.family_member_name.split(' ')[0];
+                    raw.push({
+                        id: p.id,
+                        type: 'planning',
+                        chipLabel: `${firstName} · ${p.title}`,
+                        title: p.title,
+                        timeLabel: `${p.start_time.slice(0, 5)}–${p.end_time.slice(0, 5)}`,
+                        meta: p.family_member_name,
+                        color: p.family_member_color,
+                        startHour: start,
+                        endHour: end,
+                    });
+                }
+            }
+            map.set(key, layoutBlocks(raw));
         }
-        for (const p of planningByDay.get(isoDay(d)) || []) {
-            const start = toFractionalHour(p.start_time);
-            const end = toFractionalHour(p.end_time);
-            if (end <= GRID_START || start >= GRID_END || end <= start) continue;
-            const firstName = p.family_member_name.split(' ')[0];
-            raw.push({
-                id: p.id,
-                type: 'planning',
-                chipLabel: `${firstName} · ${p.title}`,
-                title: p.title,
-                timeLabel: `${p.start_time.slice(0, 5)}–${p.end_time.slice(0, 5)}`,
-                meta: p.family_member_name,
-                color: p.family_member_color,
-                startHour: start,
-                endHour: end,
-            });
-        }
-        return layoutBlocks(raw);
-    };
+        return map;
+    }, [gridDays, apptsByDay, planningByDay, planningEnabled]);
 
-    const todayPlanning = planningByDay.get(isoDay(new Date())) || [];
-    const todayMeals = mealsByDay.get(ymd(new Date())) || [];
-    const mealsEnabled = isModuleEnabled('meals');
+    // Derived once from `now` (state, ticks every 15s) rather than fresh `new
+    // Date()` calls scattered through render — one source of truth per render.
+    const todayKey = ymd(now);
+    const nowHour = now.getHours() + now.getMinutes() / 60;
+    const todayPlanning = planningByDay.get(getISODay(now)) || [];
+    const todayMeals = mealsByDay.get(todayKey) || [];
+    // One place deciding the bus widget's placeholder text — the header badge
+    // and the detail dialog both render it the same way.
+    const busNote = buses === 'error' ? 'Bus indisponible' : buses === null ? 'Bus…' : buses.length === 0 ? 'Aucun bus' : null;
+    const busList = Array.isArray(buses) ? buses : [];
 
     const topButtonClass = 'rounded-input border border-border bg-card p-2.5 text-muted-foreground transition-colors hover:text-foreground hover:border-border-strong';
-    const clock = new Intl.DateTimeFormat(intlLocale(), { hour: '2-digit', minute: '2-digit' }).format(now);
+    const clock = hhmm(now.toISOString());
 
     return (
         <div className="flex h-screen flex-col overflow-hidden bg-background px-6 py-6 text-foreground lg:px-12 lg:py-8">
@@ -545,21 +608,13 @@ const FamilyBoard: React.FC = () => {
                         </span>
                     )}
                     {settings.busStops.some((s) => s.routes.length > 0) && (
-                        busError ? (
+                        busNote ? (
                             <span className="flex items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1.5 text-body text-muted-foreground">
-                                <Bus className="h-4 w-4 text-primary" /> Bus indisponible
-                            </span>
-                        ) : buses === null ? (
-                            <span className="flex items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1.5 text-body text-muted-foreground">
-                                <Bus className="h-4 w-4 text-primary" /> Bus…
-                            </span>
-                        ) : buses.length === 0 ? (
-                            <span className="flex items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1.5 text-body text-muted-foreground">
-                                <Bus className="h-4 w-4 text-primary" /> Aucun bus
+                                <Bus className="h-4 w-4 text-primary" /> {busNote}
                             </span>
                         ) : (
-                            buses.slice(0, 3).map((b) => {
-                                const lineColor = BUS_LINE_COLORS[b.number];
+                            busList.slice(0, 3).map((b) => {
+                                const lineColor = busLineColor(b);
                                 return (
                                     <button
                                         key={`${b.stationName}-${b.time}`}
@@ -614,16 +669,11 @@ const FamilyBoard: React.FC = () => {
                         <X className="h-5 w-5" />
                     </Link>
                 </div>
-            </div>
-
-
-            {mode === 'day' ? (
+            </div>            {mode === 'day' ? (
                 <div className="mt-4 grid flex-1 grid-cols-1 gap-6 overflow-y-auto lg:grid-cols-3">
                     {/* Schedule */}
                     <section className="rounded-card border border-border bg-card p-6 lg:col-span-2">
-                        <h2 className="mb-4 flex items-center gap-2.5 font-serif text-h2">
-                            <Calendar className="h-5 w-5 text-primary" /> Rendez-vous
-                        </h2>
+                        <SectionTitle icon={<Calendar className="h-5 w-5 text-primary" />}>Rendez-vous</SectionTitle>
                         {appointments.length === 0 ? (
                             <p className="py-6 text-center text-body text-muted-foreground">Rien de prévu aujourd'hui.</p>
                         ) : (
@@ -650,31 +700,29 @@ const FamilyBoard: React.FC = () => {
 
                     <div className="flex flex-col gap-6">
                         {/* Who's where */}
-                        <section className="rounded-card border border-border bg-card p-5">
-                            <h2 className="mb-3 flex items-center gap-2.5 font-serif text-h2">
-                                <Users className="h-5 w-5 text-primary" /> Qui est où
-                            </h2>
-                            {todayPlanning.length === 0 ? (
-                                <p className="py-3 text-center text-body text-muted-foreground">Rien de prévu.</p>
-                            ) : (
-                                <ul className="space-y-2">
-                                    {todayPlanning.map((p) => (
-                                        <li key={p.id} className="flex items-center gap-3">
-                                            <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: p.family_member_color }} />
-                                            <span className="font-medium">{p.family_member_name}</span>
-                                            <span className="min-w-0 flex-1 truncate text-muted-foreground">{p.title}</span>
-                                            <span className="shrink-0 tabular-nums text-caption text-muted-foreground">{p.start_time.slice(0, 5)}–{p.end_time.slice(0, 5)}</span>
-                                        </li>
-                                    ))}
-                                </ul>
-                            )}
-                        </section>
+                        {planningEnabled && (
+                            <section className="rounded-card border border-border bg-card p-5">
+                                <SectionTitle icon={<Users className="h-5 w-5 text-primary" />} tight>Qui est où</SectionTitle>
+                                {todayPlanning.length === 0 ? (
+                                    <p className="py-3 text-center text-body text-muted-foreground">Rien de prévu.</p>
+                                ) : (
+                                    <ul className="space-y-2">
+                                        {todayPlanning.map((p) => (
+                                            <li key={p.id} className="flex items-center gap-3">
+                                                <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: p.family_member_color }} />
+                                                <span className="font-medium">{p.family_member_name}</span>
+                                                <span className="min-w-0 flex-1 truncate text-muted-foreground">{p.title}</span>
+                                                <span className="shrink-0 tabular-nums text-caption text-muted-foreground">{p.start_time.slice(0, 5)}–{p.end_time.slice(0, 5)}</span>
+                                            </li>
+                                        ))}
+                                    </ul>
+                                )}
+                            </section>
+                        )}
 
                         {/* Tasks — tap to complete */}
                         <section className="rounded-card border border-border bg-card p-5">
-                            <h2 className="mb-3 flex items-center gap-2.5 font-serif text-h2">
-                                <CheckSquare className="h-5 w-5 text-primary" /> À faire
-                            </h2>
+                            <SectionTitle icon={<CheckSquare className="h-5 w-5 text-primary" />} tight>À faire</SectionTitle>
                             {pendingTasks.length === 0 && doneTasks.length === 0 ? (
                                 <p className="py-3 text-center text-body text-muted-foreground">Rien à faire !</p>
                             ) : (
@@ -704,9 +752,7 @@ const FamilyBoard: React.FC = () => {
                         {/* Meals */}
                         {mealsEnabled && (
                             <section className="rounded-card border border-border bg-card p-5">
-                                <h2 className="mb-3 flex items-center gap-2.5 font-serif text-h2">
-                                    <UtensilsCrossed className="h-5 w-5 text-primary" /> Repas
-                                </h2>
+                                <SectionTitle icon={<UtensilsCrossed className="h-5 w-5 text-primary" />} tight>Repas</SectionTitle>
                                 {todayMeals.length === 0 ? (
                                     <p className="py-3 text-center text-body text-muted-foreground">Rien de prévu.</p>
                                 ) : (
@@ -760,10 +806,9 @@ const FamilyBoard: React.FC = () => {
                                 const key = ymd(d);
                                 const dayMeals = mealsByDay.get(key) || [];
                                 const dayTasks = tasksByDay.get(key) || [];
-                                const blocks = blocksForDay(d);
+                                const blocks = blocksByDay.get(key) || [];
                                 const laneCount = Math.max(1, ...blocks.map((b) => b.lanes));
-                                const isToday = key === ymd(new Date());
-                                const nowHour = now.getHours() + now.getMinutes() / 60;
+                                const isToday = key === todayKey;
                                 const showNow = isToday && nowHour >= GRID_START && nowHour <= GRID_END;
                                 const dayForecast = weather?.daily.find((f) => f.date === key);
                                 return (
@@ -882,32 +927,53 @@ const FamilyBoard: React.FC = () => {
                 )}
             </Dialog>
 
-            {/* Bus detail — the header badge only shows the next departure; tap it
+            {/* Bus detail — the header badge only shows up to 3 departures; tap it
                 for the full list (moved out of a dedicated section to give the
-                calendar more vertical room, especially in the week view). */}
+                calendar more vertical room, especially in the grid views). */}
             <Dialog
                 open={busDialogOpen}
                 onOpenChange={setBusDialogOpen}
                 title="Prochains bus"
                 description={settings.busStops.map((s) => s.stationName).join(' · ') || undefined}
             >
-                {busError ? (
-                    <p className="text-body text-muted-foreground">Horaires indisponibles pour l'instant.</p>
-                ) : buses === null ? (
-                    <p className="text-body text-muted-foreground">Chargement…</p>
-                ) : buses.length === 0 ? (
-                    <p className="text-body text-muted-foreground">Aucun départ à venir.</p>
+                {busNote ? (
+                    <p className="text-body text-muted-foreground">{busNote}</p>
                 ) : (
-                    <div className="flex flex-wrap gap-3">
-                        {buses.map((b) => (
-                            <div key={`${b.stationName}-${b.time}`} className="rounded-input border border-border bg-surface-2 px-4 py-2.5 text-center">
-                                <p className="font-serif text-2xl font-semibold tabular-nums">
-                                    {b.minutesUntil <= 0 ? 'maintenant' : `${b.minutesUntil} min`}
-                                </p>
-                                <p className="text-micro text-muted-foreground">Départ {hhmm(b.time)} → Bus n°{b.number}</p>
-                                {settings.busStops.length > 1 && <p className="text-micro text-muted-foreground/70">{b.stationName}</p>}
-                            </div>
-                        ))}
+                    // Grouped by stop (not one flat chronological list) — with several
+                    // stops and lines interleaved, a single grid of same-sized cards
+                    // became a wall of near-identical boxes. Each row's left accent
+                    // matches its line's color badge in the header, for the same
+                    // at-a-glance line recognition.
+                    <div className="space-y-4">
+                        {settings.busStops.map((stop) => {
+                            const stopBuses = busList.filter((b) => b.stationName === stop.stationName);
+                            if (stopBuses.length === 0) return null;
+                            return (
+                                <div key={stop.stationId}>
+                                    <p className="mb-1.5 text-caption font-medium text-muted-foreground">{stop.stationName}</p>
+                                    <div className="space-y-1.5">
+                                        {stopBuses.map((b) => {
+                                            const lineColor = busLineColor(b);
+                                            return (
+                                                <div
+                                                    key={b.time}
+                                                    className={cn('flex items-center gap-3 rounded-input border-l-[3px] bg-surface-2 py-2 pl-3 pr-4', !lineColor && 'border-primary')}
+                                                    style={lineColor ? { borderLeftColor: lineColor } : undefined}
+                                                >
+                                                    <span className="w-16 shrink-0 font-serif text-lg font-semibold tabular-nums">
+                                                        {b.minutesUntil <= 0 ? 'maintenant' : `${b.minutesUntil} min`}
+                                                    </span>
+                                                    <span className="text-caption text-muted-foreground">Départ {hhmm(b.time)}</span>
+                                                    <span className="ml-auto shrink-0 text-caption font-medium" style={lineColor ? { color: lineColor } : undefined}>
+                                                        Bus n°{b.number}
+                                                    </span>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+                            );
+                        })}
                     </div>
                 )}
             </Dialog>
@@ -976,29 +1042,20 @@ const FamilyBoard: React.FC = () => {
                                 );
                             })}
 
-                            <div className="relative">
-                                <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                                <input
-                                    value={stationSearch}
-                                    onChange={(e) => setStationSearch(e.target.value)}
-                                    placeholder="Ajouter un arrêt…"
-                                    className="w-full rounded-input border border-border bg-background py-2.5 pl-9 pr-3 text-body outline-none focus:border-border-strong"
-                                />
-                            </div>
-                            {stationSearch.trim().length >= 2 && (
-                                stationResults.length === 0 ? (
-                                    <p className="px-1 text-caption text-muted-foreground">Aucun résultat.</p>
-                                ) : (
-                                    <div className="divide-y divide-border overflow-hidden rounded-input border border-border">
-                                        {stationResults.map((s) => (
-                                            <button key={s.id} type="button" onClick={() => addStation(s)} className="flex w-full items-center gap-2 px-3 py-2.5 text-left active:bg-surface-2">
-                                                <MapPin className="h-4 w-4 shrink-0 text-primary" />
-                                                <span className="truncate">{s.name}</span>
-                                            </button>
-                                        ))}
-                                    </div>
-                                )
-                            )}
+                            <SearchPicker
+                                value={stationSearch}
+                                onChange={setStationSearch}
+                                placeholder="Ajouter un arrêt…"
+                                results={stationResults}
+                                getKey={(s) => s.id}
+                                onPick={addStation}
+                                renderResult={(s) => (
+                                    <>
+                                        <MapPin className="h-4 w-4 shrink-0 text-primary" />
+                                        <span className="truncate">{s.name}</span>
+                                    </>
+                                )}
+                            />
                         </div>
 
                         {/* Weather town */}
@@ -1010,38 +1067,24 @@ const FamilyBoard: React.FC = () => {
                                     <span className="truncate font-medium">{settings.weatherLocation.name}</span>
                                 </span>
                             </div>
-                            <div className="relative">
-                                <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                                <input
-                                    value={citySearch}
-                                    onChange={(e) => setCitySearch(e.target.value)}
-                                    placeholder="Changer de ville…"
-                                    className="w-full rounded-input border border-border bg-background py-2.5 pl-9 pr-3 text-body outline-none focus:border-border-strong"
-                                />
-                            </div>
-                            {citySearch.trim().length >= 2 && (
-                                cityResults.length === 0 ? (
-                                    <p className="px-1 text-caption text-muted-foreground">Aucun résultat.</p>
-                                ) : (
-                                    <div className="divide-y divide-border overflow-hidden rounded-input border border-border">
-                                        {cityResults.map((r) => (
-                                            <button
-                                                key={r.id}
-                                                type="button"
-                                                onClick={() => {
-                                                    setSettings((s) => ({ ...s, weatherLocation: { name: r.name, lat: r.latitude, lon: r.longitude } }));
-                                                    setCitySearch('');
-                                                    setCityResults([]);
-                                                }}
-                                                className="flex w-full items-baseline gap-2 px-3 py-2.5 text-left active:bg-surface-2"
-                                            >
-                                                <span className="font-medium">{r.name}</span>
-                                                <span className="min-w-0 flex-1 truncate text-caption text-muted-foreground">{[r.admin1, r.country].filter(Boolean).join(', ')}</span>
-                                            </button>
-                                        ))}
-                                    </div>
-                                )
-                            )}
+                            <SearchPicker
+                                value={citySearch}
+                                onChange={setCitySearch}
+                                placeholder="Changer de ville…"
+                                results={cityResults}
+                                getKey={(r) => String(r.id)}
+                                onPick={(r) => {
+                                    setSettings((s) => ({ ...s, weatherLocation: { name: r.name, lat: r.latitude, lon: r.longitude } }));
+                                    setCitySearch('');
+                                    setCityResults([]);
+                                }}
+                                renderResult={(r) => (
+                                    <span className="flex min-w-0 flex-1 items-baseline gap-2">
+                                        <span className="font-medium">{r.name}</span>
+                                        <span className="min-w-0 flex-1 truncate text-caption text-muted-foreground">{[r.admin1, r.country].filter(Boolean).join(', ')}</span>
+                                    </span>
+                                )}
+                            />
                         </div>
                     </div>
                 </div>
