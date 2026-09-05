@@ -14,6 +14,9 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-openfamily}
       POSTGRES_USER: ${POSTGRES_USER:-openfamily}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      # Matches the server's TZ below — appointments are stored as naive local
+      # timestamps, so created_at/updated_at defaults should use the same clock.
+      TZ: ${TZ:-Europe/Zurich}
     ports:
       - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
@@ -40,6 +43,11 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
       SERVER_PORT: 3001
       NODE_ENV: production
+      # Without this, Node's Date formatting falls back to the container OS's
+      # timezone (UTC on a fresh Linux host) — since appointments are stored as
+      # naive local timestamps, that silently shifts every reminder by the
+      # UTC offset (2h in summer, 1h in winter) instead of firing on time.
+      TZ: ${TZ:-Europe/Zurich}
       JWT_SECRET: ${JWT_SECRET}
       VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY}
       VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY}
