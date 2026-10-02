@@ -13,6 +13,7 @@ import Dashboard from './pages/Dashboard';
 import Posts from './pages/Posts';
 import ShoppingList from './pages/ShoppingList';
 import Tasks from './pages/Tasks';
+import Homework from './pages/Homework';
 import Rewards from './pages/Rewards';
 import Calendar from './pages/Calendar';
 import Planning from './pages/Planning';
@@ -80,6 +81,7 @@ function App() {
                 <Route path="/" element={<Dashboard />} />
                 <Route path="/shopping" element={<ShoppingList />} />
                 <Route path="/tasks" element={<Tasks />} />
+                <Route path="/homework" element={<Homework />} />
                 <Route path="/posts" element={<Posts />} />
                 <Route path="/rewards" element={moduleRoute('rewards', <Rewards />)} />
                 <Route path="/calendar" element={<Calendar />} />

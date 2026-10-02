@@ -57,6 +57,14 @@ const enrichTasksWithMembers = async (tasks: any[], userId: string) => {
 };
 
 // Get all tasks
+// Fork: homework reuses tasks. Only these two categories exist.
+const TASK_CATEGORIES = ['chore', 'homework'];
+const cleanCategory = (value: unknown): string => (TASK_CATEGORIES.includes(value as string) ? (value as string) : 'chore');
+const cleanSubject = (value: unknown): string | null => {
+    const subject = typeof value === 'string' ? value.trim().slice(0, 50) : '';
+    return subject || null;
+};
+
 router.get('/', async (req: AuthRequest, res) => {
     try {
         const result = await query(
@@ -74,7 +82,7 @@ router.get('/', async (req: AuthRequest, res) => {
 // Create task
 router.post('/', async (req: AuthRequest, res) => {
     try {
-        const { title, description, due_date, frequency, priority, assigned_to, points } = req.body;
+        const { title, description, due_date, frequency, priority, assigned_to, points, category, subject } = req.body;
 
         const cleanedTitle = typeof title === 'string' ? title.trim() : '';
         if (!cleanedTitle) {
@@ -92,8 +100,8 @@ router.post('/', async (req: AuthRequest, res) => {
             : 0;
 
         const result = await query(
-            `INSERT INTO tasks (user_id, title, description, due_date, frequency, priority, assigned_to, points)
-       VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8) RETURNING *`,
+            `INSERT INTO tasks (user_id, title, description, due_date, frequency, priority, assigned_to, points, category, subject)
+       VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10) RETURNING *`,
             [
                 req.userId,
                 cleanedTitle,
@@ -103,6 +111,8 @@ router.post('/', async (req: AuthRequest, res) => {
                 toNullIfEmpty(priority),
                 JSON.stringify(assignedTo),
                 taskPoints,
+                cleanCategory(category),
+                cleanSubject(subject),
             ]
         );
 
@@ -123,7 +133,7 @@ router.post('/', async (req: AuthRequest, res) => {
 router.put('/:id', async (req: AuthRequest, res) => {
     try {
         const { id } = req.params;
-        const { title, description, is_completed, due_date, frequency, priority, assigned_to, points } = req.body;
+        const { title, description, is_completed, due_date, frequency, priority, assigned_to, points, category, subject } = req.body;
 
         // The previous state drives the reward logic (false→true transition only).
         const existingResult = await query(
@@ -162,6 +172,14 @@ router.put('/:id', async (req: AuthRequest, res) => {
 
         if (frequency !== undefined) {
             pushUpdate('frequency', toNullIfEmpty(frequency));
+        }
+
+        if (category !== undefined) {
+            pushUpdate('category', cleanCategory(category));
+        }
+
+        if (subject !== undefined) {
+            pushUpdate('subject', cleanSubject(subject));
         }
 
         if (priority !== undefined) {

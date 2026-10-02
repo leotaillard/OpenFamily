@@ -24,6 +24,7 @@ import {
     Plug,
     PiggyBank,
     LayoutDashboard,
+    BookOpen,
     MessageSquare,
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
@@ -42,6 +43,7 @@ const navigation: { labelKey: string; href: string; icon: typeof Home; module?: 
     { labelKey: 'items.today', href: '/', icon: Home },
     { labelKey: 'items.shopping', href: '/shopping', icon: ShoppingCart },
     { labelKey: 'items.tasks', href: '/tasks', icon: CheckSquare },
+    { labelKey: 'items.homework', href: '/homework', icon: BookOpen },
     { labelKey: 'items.posts', href: '/posts', icon: MessageSquare },
     { labelKey: 'items.rewards', href: '/rewards', icon: PiggyBank, module: 'rewards' },
     { labelKey: 'items.calendar', href: '/calendar', icon: CalendarIcon },

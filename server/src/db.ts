@@ -3,6 +3,7 @@ import { loadEnv } from './config/loadEnv';
 import logger from './lib/logger';
 import { runVersionedMigrations } from './migrations/runner';
 import { coreMigrations } from './migrations/registry';
+import { forkMigrations } from './migrations/fork';
 
 loadEnv();
 
@@ -642,7 +643,7 @@ export const runMigrations = async () => {
             for (const migration of migrations) {
                 await client.query(migration);
             }
-            const report = await runVersionedMigrations(client, coreMigrations);
+            const report = await runVersionedMigrations(client, [...coreMigrations, ...forkMigrations]);
             if (report.unknown.length > 0) {
                 // A newer OpenFamily ran against this database before this one.
                 // Its tables are still there; say so rather than refuse to start.
