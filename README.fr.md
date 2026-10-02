@@ -40,7 +40,7 @@
 | Application | Type | Ce qui est synchronisé |
 |---|---|---|
 | **Mealie** | 🍲 Recettes | Import automatique des recettes (API v1 & v2) |
-| **Tandoor** | 🌿 Recettes | Import via l'API Django REST |
+| **Tandoor** | 🌿 Recettes, planning des repas | Import via l'API Django REST (planning : bouton « Importer depuis Tandoor » du planning des repas) |
 | **Home Assistant** | 🏠 Courses | Sync liste de courses via WebSocket |
 | **Grocy** | 🥦 Courses & stock | Synchronisation liste de courses et stock |
 | **Nextcloud** | ☁️ Calendrier | Import CalDAV avec découverte automatique |
@@ -80,6 +80,8 @@ l'adresse de votre serveur (ex. `http://192.168.1.10:3001`, ou votre adresse HTT
 
 ### 🐳 Docker (recommandé pour serveur)
 
+> 📘 **Une vraie installation sur serveur ?** Suivez le **[guide serveur pas à pas](INSTALLATION.fr.md)** : secrets à définir, HTTPS avec un domaine ou Tailscale, mises à jour et sauvegardes.
+
 ```bash
 cp .env.example .env   # éditez vos paramètres
 docker-compose up -d --build
@@ -87,12 +89,23 @@ docker-compose up -d --build
 
 - Frontend : http://localhost:3000 · Backend : http://localhost:3001
 
+**Vous préférez des images prêtes à l'emploi ?** Chaque version est publiée pour amd64 et arm64. Créez un `docker-compose.override.yml` à côté de `docker-compose.yml` :
+
+```yaml
+services:
+  server:
+    image: ghcr.io/nexaflowfrance/openfamily-server:1.8.1
+  client:
+    image: ghcr.io/nexaflowfrance/openfamily-client:1.8.1
+```
+
+puis lancez `docker compose pull server client && docker compose up -d`, sans `--build`. Les noms d'image prennent bien le suffixe `-server` / `-client`. Les options de construction comme `VITE_REGISTRATION_ENABLED` demandent toujours de construire le client vous-même.
+
 ### 🛠️ Installation manuelle
 
 ```bash
 npm run install:all
 psql -U postgres -c "CREATE DATABASE openfamily;"
-psql -U postgres -d openfamily -f server/schema.sql
 cp .env.example .env
 npm run dev
 ```

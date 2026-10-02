@@ -194,7 +194,22 @@ function recurringForMonth(month: number, year: number): Json[] {
         .filter((r) => r.is_active !== false)
         .map((r) => {
             const logged = recurringLogs.get(logKey(r.id as string, month, year));
-            return { ...r, is_pointed: logged !== undefined ? logged : isCurrentMonth && Boolean(r.is_pointed) };
+            // Same shape as the server: one monthly occurrence on the debit day,
+            // clamped to the month's last day.
+            const day = Math.min(num(r.debit_day) || 1, new Date(year, month, 0).getDate());
+            const occurrenceDate = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+            return {
+                recurrence_frequency: 'monthly',
+                recurrence_interval: 1,
+                recurrence_until: null,
+                is_expense: true,
+                start_date: `${year}-01-${String(Math.min(num(r.debit_day) || 1, 28)).padStart(2, '0')}`,
+                ...r,
+                series_id: r.id,
+                occurrence_id: `${r.id}:${occurrenceDate}`,
+                occurrence_date: occurrenceDate,
+                is_pointed: logged !== undefined ? logged : isCurrentMonth && Boolean(r.is_pointed),
+            };
         });
 }
 
@@ -294,8 +309,15 @@ async function route(method: string, path: string, q: Record<string, string>, bo
         return ok({ token: 'demo-token', user: store.user });
     if (path === '/api/auth/currency') { store.user = { ...store.user, currency: body.currency }; return ok({ user: store.user }); }
     if (path === '/api/auth/language') {
-        if (!['fr', 'en', 'pt', 'ru', 'zh'].includes(String(body.language))) throw new Error('Invalid language'); // mirrors the server's 400
+        if (!['fr', 'en', 'pt', 'ru', 'zh', 'es'].includes(String(body.language))) throw new Error('Invalid language'); // mirrors the server's 400
         store.user = { ...store.user, language: body.language };
+        return ok({ user: store.user });
+    }
+    if (path === '/api/auth/regional-preferences') {
+        const raw = body.week_start_day;
+        const day = raw === null || raw === '' || raw === undefined ? null : Number(raw);
+        if (day !== null && (!Number.isInteger(day) || day < 1 || day > 7)) throw new Error('Invalid week_start_day'); // mirrors the server's 400
+        store.user = { ...store.user, week_start_day: day };
         return ok({ user: store.user });
     }
     if (path === '/api/auth/profile') { store.user = { ...store.user, ...body }; return ok({ user: store.user }); }
@@ -621,8 +643,9 @@ async function route(method: string, path: string, q: Record<string, string>, bo
     if (path === '/api/budget/recurring' && method === 'POST') return ok(create('budgetRecurring', { is_active: true, is_pointed: false, ...body }));
     if (seg[1] === 'budget' && seg[2] === 'recurring' && seg[4] === 'point') {
         const now = new Date();
-        const month = num(body.month) || now.getMonth() + 1;
-        const year = num(body.year) || now.getFullYear();
+        const occurrence = typeof body.occurrence_date === 'string' ? body.occurrence_date : '';
+        const month = num(occurrence.slice(5, 7)) || num(body.month) || now.getMonth() + 1;
+        const year = num(occurrence.slice(0, 4)) || num(body.year) || now.getFullYear();
         recurringLogs.set(logKey(seg[3], month, year), Boolean(body.is_pointed));
         const item = (store.budgetRecurring as Json[]).find((r) => r.id === seg[3]);
         return ok({ ...item, is_pointed: Boolean(body.is_pointed) });
@@ -757,8 +780,15 @@ async function route(method: string, path: string, q: Record<string, string>, bo
     if (seg[1] === 'notifications' && last === 'read') { update('notifications', seg[2], { is_read: true }); return ok({}); }
 
     // ── Data export/import ──────────────────────────────────────────────────────
-    if (path === '/api/data/export') return ok(store);
-    if (path === '/api/data/import') return ok({ imported: {} });
+    if (path === '/api/data/export') return ok({
+        ...store,
+        format: 'openfamily-portable',
+        version: '2.0',
+        appVersion: 'demo',
+        exportedAt: new Date().toISOString(),
+        scope: 'family',
+    });
+    if (path === '/api/data/import') return ok({ format: 'openfamily-portable', version: '2.0', imported: {} });
 
     // Fallback: empty success so the UI never crashes in the demo.
     return ok([]);

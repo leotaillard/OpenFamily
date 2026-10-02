@@ -1,12 +1,13 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useWebSocketUpdates } from '../hooks/useWebSocketUpdates';
 import { api } from '../lib/api';
-import { Plus, Search, Edit2, Trash2, Clock, Users, ChefHat, Eye, Link2, Sparkles, ShoppingCart, CheckSquare, Square, Filter, X } from 'lucide-react';
+import { Plus, Search, Edit2, Trash2, Clock, Users, ChefHat, Eye, Link2, Sparkles, ShoppingCart, CheckSquare, Square, Filter, X, Carrot } from 'lucide-react';
 import { Card, CardContent, Button, Dialog, Input, Select, Textarea, Badge, useToast } from '../components/ui';
 import { useCategories } from '../hooks/useCategories';
 import { cn } from '../lib/utils';
 import { cleanIngredientForShopping } from '../lib/ingredientParser';
+import { foldText, matchesWords } from '../lib/textSearch';
 
 /** Recipe returned by POST /api/ai/refine-recipe — a subset of ImportedRecipe:
  *  the model reorganises what it was given, it does not invent tags or an image. */
@@ -99,6 +100,28 @@ export interface ShoppingItemDraft {
     checked: boolean;
 }
 
+// Card preview: the recipe photo when there is one and it loads, the chef hat
+// otherwise. image_url is free text (typed by hand or picked from a site's
+// JSON-LD), so a dead link, a 404 or a photo blocked as mixed content would
+// otherwise leave the browser's broken-image icon in the card. The parent keys
+// this on the URL so a changed photo gets a fresh attempt.
+const RecipeImage: React.FC<{ src?: string | null; alt: string }> = ({ src, alt }) => {
+    const [failed, setFailed] = useState(false);
+    if (!src || failed) {
+        return <ChefHat className="h-16 w-16 text-nexus-blue/30" />;
+    }
+    return (
+        <img
+            src={src}
+            alt={alt}
+            loading="lazy"
+            referrerPolicy="no-referrer"
+            onError={() => setFailed(true)}
+            className="w-full h-full object-cover object-center"
+        />
+    );
+};
+
 const Recipes: React.FC = () => {
     const { t } = useTranslation(['recipes', 'common']);
     // Family-customizable list (Settings → Categories); defaults are translated,
@@ -134,6 +157,9 @@ const Recipes: React.FC = () => {
     const [filterDifficulty, setFilterDifficulty] = useState('');
     const [filterDuration, setFilterDuration] = useState('');
     const [showMobileFilters, setShowMobileFilters] = useState(false);
+    // "What I have at home": every listed ingredient must appear in the recipe.
+    const [ingredientFilter, setIngredientFilter] = useState<string[]>([]);
+    const [ingredientDraft, setIngredientDraft] = useState('');
     const [error, setError] = useState('');
     const [importDialogOpen, setImportDialogOpen] = useState(false);
     const [importUrl, setImportUrl] = useState('');
@@ -319,7 +345,11 @@ const Recipes: React.FC = () => {
             loadRecipes();
         } catch (error) {
             console.error('Failed to save recipe:', error);
-            setError(error instanceof Error ? error.message : t('recipes:errors.save'));
+            setError(
+                error instanceof Error && error.message === 'INVALID_IMAGE_URL'
+                    ? t('recipes:errors.invalidImage')
+                    : error instanceof Error ? error.message : t('recipes:errors.save')
+            );
         }
     };
 
@@ -335,6 +365,7 @@ const Recipes: React.FC = () => {
     };
 
     const handleEdit = (recipe: Recipe) => {
+        setError('');
         setEditingRecipe(recipe);
         setFormData({
             name: recipe.name,
@@ -410,6 +441,7 @@ const Recipes: React.FC = () => {
     };
 
     const resetForm = () => {
+        setError('');
         setEditingRecipe(null);
         setFormData({
             name: '',
@@ -426,8 +458,36 @@ const Recipes: React.FC = () => {
         });
     };
 
+    const addIngredientFilter = (raw: string) => {
+        const value = raw.replace(/,+$/, '').trim();
+        setIngredientDraft('');
+        if (!value) return;
+        setIngredientFilter((prev) => (prev.some((v) => foldText(v) === foldText(value)) ? prev : [...prev, value]));
+    };
+
+    // Ingredient names across all recipes, offered as suggestions while typing.
+    const knownIngredients = useMemo(() => {
+        const byKey = new Map<string, string>();
+        for (const recipe of recipes) {
+            for (const line of recipe.ingredients ?? []) {
+                // The server sends lines of text; anything else is skipped, never fatal.
+                if (typeof line !== 'string') continue;
+                const name = cleanIngredientForShopping(line).name.trim();
+                if (name && name.length <= 40 && !byKey.has(foldText(name))) byKey.set(foldText(name), name);
+            }
+        }
+        return [...byKey.values()].sort((a, b) => a.localeCompare(b));
+    }, [recipes]);
+
+    const matchedIngredientLines = (recipe: Recipe) =>
+        (recipe.ingredients ?? []).filter((line) => ingredientFilter.some((term) => matchesWords(line, term)));
+
     const filteredRecipes = recipes.filter((recipe) => {
-        if (searchQuery && !recipe.name.toLowerCase().includes(searchQuery.toLowerCase())) {
+        if (searchQuery && !foldText(recipe.name).includes(foldText(searchQuery))) {
+            return false;
+        }
+        if (ingredientFilter.length > 0
+            && !ingredientFilter.every((term) => (recipe.ingredients ?? []).some((line) => matchesWords(line, term)))) {
             return false;
         }
         if (filterCategory && recipe.category !== filterCategory) return false;
@@ -524,14 +584,14 @@ const Recipes: React.FC = () => {
                             </div>
                             <Button
                                 type="button"
-                                variant={showMobileFilters || filterCategory || filterDifficulty || filterDuration ? 'primary' : 'secondary'}
+                                variant={showMobileFilters || filterCategory || filterDifficulty || filterDuration || ingredientFilter.length > 0 ? 'primary' : 'secondary'}
                                 size="sm"
                                 onClick={() => setShowMobileFilters((prev) => !prev)}
                                 className="lg:hidden flex-shrink-0 h-10 px-3 whitespace-nowrap"
                             >
                                 <Filter className="h-4 w-4 mr-1.5" />
-                                Filtros
-                                {(filterCategory || filterDifficulty || filterDuration) && (
+                                {t('recipes:filters.toggle')}
+                                {(filterCategory || filterDifficulty || filterDuration || ingredientFilter.length > 0) && (
                                     <span className="ml-1.5 w-2 h-2 rounded-full bg-white inline-block" />
                                 )}
                             </Button>
@@ -559,9 +619,55 @@ const Recipes: React.FC = () => {
                                 onValueChange={setFilterDuration}
                                 options={[{ value: '', label: t('recipes:anyDuration') }, ...DURATIONS]}
                             />
+                            <div className="lg:col-span-3">
+                                <label
+                                    className="flex min-h-10 cursor-text flex-wrap items-center gap-1.5 rounded-input border border-input bg-card px-3 py-1.5 focus-within:border-primary"
+                                >
+                                    <Carrot className="h-4 w-4 flex-shrink-0 text-muted-foreground" aria-hidden />
+                                    {ingredientFilter.map((term) => (
+                                        <span key={term} className="inline-flex items-center gap-1 rounded-pill bg-primary-soft py-0.5 pl-2.5 pr-1 text-caption text-primary">
+                                            {term}
+                                            <button
+                                                type="button"
+                                                onClick={() => setIngredientFilter((prev) => prev.filter((v) => v !== term))}
+                                                aria-label={t('recipes:filters.removeIngredient', { name: term })}
+                                                title={t('recipes:filters.removeIngredient', { name: term })}
+                                                className="flex h-6 w-6 items-center justify-center rounded-full hover:bg-primary/10"
+                                            >
+                                                <X className="h-3 w-3" />
+                                            </button>
+                                        </span>
+                                    ))}
+                                    <input
+                                        list="recipe-known-ingredients"
+                                        value={ingredientDraft}
+                                        onChange={(e) => {
+                                            // Typing a comma adds the ingredient, like pressing Enter.
+                                            if (e.target.value.endsWith(',')) addIngredientFilter(e.target.value);
+                                            else setIngredientDraft(e.target.value);
+                                        }}
+                                        onKeyDown={(e) => {
+                                            if (e.key === 'Enter') {
+                                                e.preventDefault();
+                                                addIngredientFilter(ingredientDraft);
+                                            } else if (e.key === 'Backspace' && !ingredientDraft && ingredientFilter.length > 0) {
+                                                setIngredientFilter((prev) => prev.slice(0, -1));
+                                            }
+                                        }}
+                                        onBlur={() => addIngredientFilter(ingredientDraft)}
+                                        placeholder={ingredientFilter.length ? t('recipes:filters.ingredientsMore') : t('recipes:filters.ingredientsPlaceholder')}
+                                        aria-label={t('recipes:filters.ingredientsPlaceholder')}
+                                        className="min-w-[8rem] flex-1 border-0 bg-transparent p-0 py-1 text-body-sm shadow-none outline-none ring-0 placeholder:text-muted-foreground focus:border-0 focus:shadow-none focus:outline-none focus:ring-0 [&::-webkit-calendar-picker-indicator]:hidden"
+                                    />
+                                    <datalist id="recipe-known-ingredients">
+                                        {knownIngredients.map((name) => <option key={name} value={name} />)}
+                                    </datalist>
+                                </label>
+                                <p className="mt-1 text-micro text-muted-foreground">{t('recipes:filters.ingredientsHelp')}</p>
+                            </div>
                         </div>
 
-                        {(filterCategory || filterDifficulty || filterDuration || searchQuery) && (
+                        {(filterCategory || filterDifficulty || filterDuration || searchQuery || ingredientFilter.length > 0) && (
                             <div className="flex justify-end pt-1">
                                 <Button
                                     type="button"
@@ -572,11 +678,13 @@ const Recipes: React.FC = () => {
                                         setFilterCategory('');
                                         setFilterDifficulty('');
                                         setFilterDuration('');
+                                        setIngredientFilter([]);
+                                        setIngredientDraft('');
                                     }}
                                     className="text-muted-foreground text-caption h-7 px-2"
                                 >
                                     <X className="h-3.5 w-3.5 mr-1" />
-                                    Limpar filtros
+                                    {t('recipes:filters.clear')}
                                 </Button>
                             </div>
                         )}
@@ -598,10 +706,10 @@ const Recipes: React.FC = () => {
                 </Card>
             ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                    {filteredRecipes.map((recipe) => (
+                    {filteredRecipes.map((recipe: Recipe) => (
                         <Card key={recipe.id} className="hover:shadow-lg transition-shadow overflow-hidden">
                             <div className="h-40 bg-gradient-to-br from-nexus-blue/10 to-nexus-amber/10 flex items-center justify-center">
-                                <ChefHat className="h-16 w-16 text-nexus-blue/30" />
+                                <RecipeImage key={recipe.image_url ?? ''} src={recipe.image_url} alt={recipe.name} />
                             </div>
                             <CardContent className="p-4">
                                 <div className="flex items-start justify-between mb-2">
@@ -610,6 +718,12 @@ const Recipes: React.FC = () => {
                                 {recipe.description && (
                                     <p className="text-body-sm text-muted-foreground mb-3 line-clamp-2">
                                         {recipe.description}
+                                    </p>
+                                )}
+                                {ingredientFilter.length > 0 && (
+                                    <p className="mb-3 flex items-start gap-1.5 text-caption text-primary">
+                                        <Carrot className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" aria-hidden />
+                                        <span className="line-clamp-2">{matchedIngredientLines(recipe).join(' · ')}</span>
                                     </p>
                                 )}
                                 <div className="flex flex-wrap gap-2 mb-3">
@@ -753,6 +867,12 @@ const Recipes: React.FC = () => {
                         onChange={(e) => setFormData({ ...formData, image_url: e.target.value })}
                         placeholder={t('recipes:form.imagePlaceholder')}
                     />
+                    {/* The page banner sits behind this dialog: repeat the save error here. */}
+                    {error && (
+                        <div role="alert" className="rounded-input border border-danger/30 bg-danger/10 px-3 py-2 text-caption text-danger">
+                            {error}
+                        </div>
+                    )}
                     <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3 pt-4 border-t">
                         <Button
                             type="button"
@@ -948,7 +1068,10 @@ const Recipes: React.FC = () => {
                 <div className="space-y-4">
                     <div className="flex justify-between items-center pb-2 border-b">
                         <span className="text-body-sm font-medium text-muted-foreground">
-                            {selectedIngredients.filter((i) => i.checked).length} de {selectedIngredients.length} selecionados
+                            {t('recipes:shopping.selectedCount', {
+                                count: selectedIngredients.filter((i) => i.checked).length,
+                                total: selectedIngredients.length,
+                            })}
                         </span>
                         <Button type="button" variant="ghost" size="sm" onClick={toggleAllIngredients}>
                             {selectedIngredients.every((i) => i.checked) ? t('recipes:shopping.deselectAll') : t('recipes:shopping.selectAll')}

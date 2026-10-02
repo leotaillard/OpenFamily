@@ -24,6 +24,7 @@ import {
     Plug,
     PiggyBank,
     LayoutDashboard,
+    MessageSquare,
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { Button } from '../ui/Button';
@@ -41,6 +42,7 @@ const navigation: { labelKey: string; href: string; icon: typeof Home; module?: 
     { labelKey: 'items.today', href: '/', icon: Home },
     { labelKey: 'items.shopping', href: '/shopping', icon: ShoppingCart },
     { labelKey: 'items.tasks', href: '/tasks', icon: CheckSquare },
+    { labelKey: 'items.posts', href: '/posts', icon: MessageSquare },
     { labelKey: 'items.rewards', href: '/rewards', icon: PiggyBank, module: 'rewards' },
     { labelKey: 'items.calendar', href: '/calendar', icon: CalendarIcon },
     { labelKey: 'items.board', href: '/board', icon: LayoutDashboard },
@@ -64,6 +66,7 @@ const mobileTabs: { labelKey: string; href: string; icon: typeof Home; module?: 
 const quickActions: { labelKey: string; href: string; icon: typeof Home; module?: string }[] = [
     { labelKey: 'quickActions.addShopping', href: '/shopping', icon: ShoppingCart },
     { labelKey: 'quickActions.addTask', href: '/tasks', icon: CheckSquare },
+    { labelKey: 'quickActions.addPost', href: '/posts', icon: MessageSquare },
     { labelKey: 'quickActions.addAppointment', href: '/calendar', icon: CalendarIcon },
     { labelKey: 'quickActions.addSchedule', href: '/planning', icon: CalendarDays, module: 'planning' },
     { labelKey: 'quickActions.addRecipe', href: '/recipes', icon: ChefHat, module: 'recipes' },

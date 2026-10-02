@@ -14,7 +14,7 @@ can shift based on feedback — issues and discussions are welcome.
   flow, pocket-money page (balances, streaks, adjust/redeem), savings goals with
   progress bars and a dedicated kid view.
 - **Local-first AI assistant** *(v1.2, first slice)* — provider abstraction
-  (Ollama / OpenAI-compatible / Anthropic, bring-your-own-key, keys encrypted at
+  (Ollama / OpenAI-compatible / Anthropic / Google Gemini, bring-your-own-key, keys encrypted at
   rest): natural-language input (Ctrl+K) that turns a sentence into tasks,
   appointments, shopping items or budget entries, and automatic weekly dinner
   suggestions from the recipe library.
@@ -47,15 +47,47 @@ can shift based on feedback — issues and discussions are welcome.
 - **Editable shopping quantities** *(v1.6)*: correct a quantity in place instead of
   deleting the line and typing it again, plus around fifty ready-made items offered
   as you type.
+- **Family posts** *(v1.7)*: a small shared feed for the household, text, photo or
+  link, where every member sees who has already read a post. The latest one is
+  shown on the dashboard. Contributed by @thecybermacgyver.
+- **Recurring, all-day and coloured appointments** *(v1.7)*: daily, weekly, monthly
+  or yearly series with a single occurrence editable or skipped on its own, whole-day
+  entries without a time slot, a colour per appointment and search in the calendar.
+  From the community set in #85.
+- **Portuguese and Russian interface** *(v1.7)*: joining English, French and
+  Simplified Chinese, with the server's emails and reminders following the same
+  choice. Contributed by @filipevieira and @streletskiy.
+- **Server-owned database schema** *(v1.7)*: the server creates and upgrades the
+  whole schema on startup, so packaging (Docker, TrueNAS, the installers) no longer
+  needs to mount an init script. Contributed by @blastik.
+- **Complete family export** *(v1.7.1)*: the export covers every module (rewards,
+  Kakeibo, recurring expenses, notes, posts, appointment exceptions) and never
+  includes passwords, tokens or credentials. A restore maps accounts by e-mail and
+  can be repeated without creating duplicates. Contributed by @thecybermacgyver.
+- **Other calendars** *(v1.8)*: import an .ics file, or follow Google Calendar,
+  Outlook, Apple or any iCal address; followed calendars refresh every 30 minutes
+  and keep their events in step with the source.
+- **Reminders at any time** *(v1.8)*: up to five per appointment, from the start
+  time to four weeks before, on every occurrence of a recurring appointment.
+- **Recurring budget and Kakeibo** *(v1.8)*: recurring expenses and income on any
+  schedule, linked to the calendar, with Kakeibo as a third view. Contributed by
+  @thecybermacgyver.
+- **Spanish, and each member's own week** *(v1.8)*: the interface, e-mails and
+  notifications follow each member's language; each member picks the first day of
+  the week. Contributed by @thecybermacgyver.
+- **Recipes by ingredient and Tandoor meal plans** *(v1.8)*: find the recipes that
+  use what you have at home, and import the week's Tandoor meal plan (contributed by
+  @foulek57).
 
 ## Under consideration
 
-- **More languages** — the interface is currently English/French. The i18n
-  infrastructure is in place (namespaced JSON locales); the goal is to add German,
-  Spanish, Italian, Dutch and more, ideally through a community translation
-  workflow (e.g. Weblate). Contributions welcome.
-- **Two-way Google Calendar / CalDAV sync** (today: Nextcloud import + iCal export
-  only). CalDAV two-way first (covers Nextcloud, iCloud, Fastmail), Google later
+- **More languages** — the interface is available in English, French, Portuguese,
+  Russian, Spanish and Simplified Chinese. The i18n infrastructure is in place (namespaced
+  JSON locales); the goal is to add German, Italian, Dutch and more,
+  ideally through a community translation workflow (e.g. Weblate). Contributions
+  welcome.
+- **Two-way Google Calendar / CalDAV sync** (today: one-way from Nextcloud or any
+  iCal address, including Google, plus iCal export). CalDAV two-way first (covers Nextcloud, iCloud, Fastmail), Google later
   (OAuth verification burden).
 - **Self-hosted family location** — private location sharing via OwnTracks /
   Traccar / Home Assistant `device_tracker`, plus geo-reminders ("you're near the

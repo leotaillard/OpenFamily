@@ -19,7 +19,7 @@ import {
 } from 'lucide-react';
 import { addDays, addWeeks, format, startOfWeek, subWeeks } from 'date-fns';
 import { useTranslation } from 'react-i18next';
-import { dateLocale } from '../i18n/format';
+import { dateLocale, offsetForIsoWeekday, orderIsoWeekdays, weekStartsOn } from '../i18n/format';
 import { api } from '../lib/api';
 import { useWebSocketUpdates } from '../hooks/useWebSocketUpdates';
 import { Button, Card, CardContent, CardHeader, CardTitle, Dialog, Input, Select, Textarea } from '../components/ui';
@@ -63,6 +63,7 @@ interface PlanningEntry {
 /** An appointment shown alongside the planning, read-only. */
 interface WeekAppointment {
     id: string;
+    occurrence_id?: string;
     title: string;
     start_time: string;
     end_time?: string | null;
@@ -141,7 +142,10 @@ const Planning: React.FC = () => {
         notes: '',
     });
 
-    const weekStart = useMemo(() => startOfWeek(weekAnchor, { weekStartsOn: 1 }), [weekAnchor]);
+    const firstDay = weekStartsOn();
+    const weekStart = useMemo(() => startOfWeek(weekAnchor, { weekStartsOn: firstDay }), [weekAnchor, firstDay]);
+    // Columns follow the visible first day; day values stay ISO (Monday = 1).
+    const orderedDays = useMemo(() => orderIsoWeekdays(DAYS), [DAYS, firstDay]);
 
     useEffect(() => {
         const bootstrap = async () => {
@@ -217,8 +221,12 @@ const Planning: React.FC = () => {
      */
     const loadAppointments = async (ws: Date) => {
         try {
-            const start = format(ws, 'yyyy-MM-dd');
-            const end = format(addDays(ws, 7), 'yyyy-MM-dd');
+            // Full timestamps, not bare dates: the server only expands a recurring
+            // appointment when it can parse both bounds as date AND time. Given a
+            // bare date it returns the series unexpanded, which would show a
+            // January event in every week from then on, at its January date.
+            const start = format(ws, "yyyy-MM-dd'T'00:00:00");
+            const end = format(addDays(ws, 6), "yyyy-MM-dd'T'23:59:59");
             const response = await api.get<{ success: boolean; data: WeekAppointment[] }>(
                 `/api/appointments?start_date=${start}&end_date=${end}`
             );
@@ -401,7 +409,7 @@ const Planning: React.FC = () => {
         try {
             if (selectedDays.length === 1) {
                 const specificDate = thisWeekOnly
-                    ? format(addDays(weekStart, selectedDays[0] - 1), 'yyyy-MM-dd')
+                    ? format(addDays(weekStart, offsetForIsoWeekday(selectedDays[0])), 'yyyy-MM-dd')
                     : null;
                 const payload = {
                     ...basePayload,
@@ -617,8 +625,10 @@ const Planning: React.FC = () => {
                 </CardContent>
             </Card>
 
-            <div className="grid grid-cols-1 gap-4 lg:grid-cols-7">
-                {DAYS.map((day, index) => {
+            {/* Seven side-by-side days need about 1500px; below that the week
+                wraps so times and titles stay readable. */}
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-7">
+                {orderedDays.map((day, index) => {
                     const dateForHeader = addDays(weekStart, index);
                     const dayEntries = visibleEntries.filter((entry) => entry.day_of_week === day.value);
                     // The concrete date this column stands for, used to tell a
@@ -626,7 +636,7 @@ const Planning: React.FC = () => {
                     const dayIso = format(dateForHeader, 'yyyy-MM-dd');
                     const dayAppointments = appointmentsByDay.get(day.value) || [];
                     return (
-                        <Card key={day.value} hover={false} className="min-h-[280px]">
+                        <Card key={day.value} hover={false} className="sm:min-h-[220px]">
                             <CardHeader className="pb-2">
                                 <div className="flex items-start justify-between gap-2">
                                     <div>
@@ -676,76 +686,79 @@ const Planning: React.FC = () => {
                                                 className={`overflow-hidden rounded-input border border-border bg-card shadow-surface ${skipped ? 'opacity-45' : ''}`}
                                                 style={{ borderLeftColor: entry.family_member_color, borderLeftWidth: 3 }}
                                             >
-                                                <div className="p-1.5">
-                                                    {/* Time + actions row */}
-                                                    <div className="flex items-center justify-between gap-1">
-                                                        <p className={`text-[10px] font-semibold leading-tight text-foreground ${skipped ? 'line-through' : ''}`}>
-                                                            {formatTime(entry.start_time)}
-                                                            <span className="text-muted-foreground">–</span>
-                                                            {formatTime(entry.end_time)}
-                                                            {entry.end_time < entry.start_time && (
-                                                                <span className="ml-0.5 text-[9px] text-muted-foreground">{t('planning:nextDayShort')}</span>
-                                                            )}
-                                                        </p>
-                                                        <div className="flex flex-shrink-0 items-center">
-                                                            {entry.specific_date
-                                                                ? <Pin className="mr-0.5 h-2.5 w-2.5 text-amber-500" />
-                                                                : <Repeat className="mr-0.5 h-2.5 w-2.5 text-muted-foreground/50" />
-                                                            }
+                                                <div className="p-2.5">
+                                                    {/* Time */}
+                                                    <p className={`flex items-center gap-1 whitespace-nowrap text-micro font-semibold leading-tight text-foreground ${skipped ? 'line-through' : ''}`}>
+                                                        {entry.specific_date
+                                                            ? <Pin className="h-3 w-3 flex-shrink-0 text-amber-500" />
+                                                            : <Repeat className="h-3 w-3 flex-shrink-0 text-muted-foreground/60" />}
+                                                        {formatTime(entry.start_time)}
+                                                        <span className="text-muted-foreground">–</span>
+                                                        {formatTime(entry.end_time)}
+                                                        {entry.end_time < entry.start_time && (
+                                                            <span className="text-[10px] text-muted-foreground">{t('planning:nextDayShort')}</span>
+                                                        )}
+                                                    </p>
+                                                    {/* Title */}
+                                                    <p className={`mt-1 break-words text-caption font-medium leading-snug text-foreground ${skipped ? 'line-through' : ''}`}>
+                                                        {entry.title}
+                                                    </p>
+                                                    {/* Participants, then actions: 32px targets, usable with a finger */}
+                                                    <div className="mt-1.5 flex items-center justify-between gap-1">
+                                                        <div className="flex min-w-0 items-center gap-1">
+                                                            <TypeIcon className="h-3 w-3 flex-shrink-0 text-muted-foreground" />
+                                                            <span className="flex flex-shrink-0 items-center -space-x-0.5">
+                                                                {people.map((person) => (
+                                                                    <span
+                                                                        key={person.id}
+                                                                        title={person.name}
+                                                                        className="h-2 w-2 rounded-full ring-1 ring-card"
+                                                                        style={{ backgroundColor: person.color }}
+                                                                    />
+                                                                ))}
+                                                            </span>
+                                                            <span className="truncate text-micro text-muted-foreground">
+                                                                {people.length === 1
+                                                                    ? people[0].name
+                                                                    : `${people[0].name} +${people.length - 1}`}
+                                                            </span>
+                                                        </div>
+                                                        <div className="-mr-1 flex flex-shrink-0 items-center">
                                                             {isSeries && (
                                                                 <button
                                                                     type="button"
                                                                     title={skipped ? t('planning:occurrence.restore') : t('planning:occurrence.skip')}
                                                                     aria-label={skipped ? t('planning:occurrence.restore') : t('planning:occurrence.skip')}
-                                                                    className="rounded p-0.5 text-muted-foreground hover:bg-surface-2 hover:text-foreground"
+                                                                    className="flex h-8 w-8 items-center justify-center rounded-input text-muted-foreground hover:bg-surface-2 hover:text-foreground"
                                                                     onClick={() => toggleOccurrence(entry, dayIso, skipped)}
                                                                 >
                                                                     {skipped
-                                                                        ? <RotateCcw className="h-3 w-3" />
-                                                                        : <CalendarOff className="h-3 w-3" />}
+                                                                        ? <RotateCcw className="h-3.5 w-3.5" />
+                                                                        : <CalendarOff className="h-3.5 w-3.5" />}
                                                                 </button>
                                                             )}
                                                             <button
                                                                 type="button"
-                                                                className="rounded p-0.5 text-muted-foreground hover:bg-surface-2 hover:text-foreground"
+                                                                title={t('common:actions.edit')}
+                                                                aria-label={t('common:actions.edit')}
+                                                                className="flex h-8 w-8 items-center justify-center rounded-input text-muted-foreground hover:bg-surface-2 hover:text-foreground"
                                                                 onClick={() => handleEdit(entry)}
                                                             >
-                                                                <Edit2 className="h-3 w-3" />
+                                                                <Edit2 className="h-3.5 w-3.5" />
                                                             </button>
                                                             <button
                                                                 type="button"
-                                                                className="rounded p-0.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                                                                title={t('common:actions.delete')}
+                                                                aria-label={t('common:actions.delete')}
+                                                                className="flex h-8 w-8 items-center justify-center rounded-input text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
                                                                 onClick={() => handleDelete(entry.id)}
                                                             >
-                                                                <Trash2 className="h-3 w-3" />
+                                                                <Trash2 className="h-3.5 w-3.5" />
                                                             </button>
                                                         </div>
                                                     </div>
-                                                    {/* Title */}
-                                                    <p className={`mt-0.5 truncate text-[11px] font-medium leading-tight text-foreground ${skipped ? 'line-through' : ''}`}>
-                                                        {entry.title}
-                                                    </p>
-                                                    {/* Type + participants row */}
-                                                    <div className="mt-1 flex items-center gap-1">
-                                                        <TypeIcon className="h-2.5 w-2.5 flex-shrink-0 text-muted-foreground" />
-                                                        <span className="flex flex-shrink-0 items-center -space-x-0.5">
-                                                            {people.map((person) => (
-                                                                <span
-                                                                    key={person.id}
-                                                                    title={person.name}
-                                                                    className="h-1.5 w-1.5 rounded-full ring-1 ring-card"
-                                                                    style={{ backgroundColor: person.color }}
-                                                                />
-                                                            ))}
-                                                        </span>
-                                                        <span className="truncate text-[10px] text-muted-foreground">
-                                                            {people.length === 1
-                                                                ? people[0].name
-                                                                : `${people[0].name} +${people.length - 1}`}
-                                                        </span>
-                                                    </div>
                                                     {entry.location ? (
-                                                        <p className="mt-0.5 truncate text-[10px] text-muted-foreground">{entry.location}</p>
+                                                        <p className="truncate text-micro text-muted-foreground">{entry.location}</p>
                                                     ) : null}
                                                 </div>
                                             </div>
@@ -758,26 +771,26 @@ const Planning: React.FC = () => {
                                     guests; tapping one goes there. */}
                                 {dayAppointments.map((appointment) => (
                                     <button
-                                        key={appointment.id}
+                                        key={appointment.occurrence_id || appointment.id}
                                         type="button"
                                         onClick={() => navigate('/calendar')}
                                         title={t('planning:appointments.openCalendar')}
-                                        className="w-full overflow-hidden rounded-input border border-dashed border-border bg-surface-2/40 p-1.5 text-left hover:border-primary"
+                                        className="w-full overflow-hidden rounded-input border border-dashed border-border bg-surface-2/40 p-2.5 text-left hover:border-primary"
                                     >
                                         <div className="flex items-center gap-1">
-                                            <CalendarClock className="h-2.5 w-2.5 flex-shrink-0 text-muted-foreground" />
-                                            <p className="text-[10px] font-semibold leading-tight text-foreground">
+                                            <CalendarClock className="h-3 w-3 flex-shrink-0 text-muted-foreground" />
+                                            <p className="text-micro font-semibold leading-tight text-foreground">
                                                 {format(new Date(appointment.start_time), 'HH:mm')}
                                             </p>
-                                            <span className="ml-auto text-[9px] uppercase tracking-wide text-muted-foreground">
+                                            <span className="ml-auto text-[10px] uppercase tracking-wide text-muted-foreground">
                                                 {t('planning:appointments.badge')}
                                             </span>
                                         </div>
-                                        <p className="mt-0.5 truncate text-[11px] font-medium leading-tight text-foreground">
+                                        <p className="mt-1 break-words text-caption font-medium leading-snug text-foreground">
                                             {appointment.title}
                                         </p>
                                         {appointment.location ? (
-                                            <p className="mt-0.5 truncate text-[10px] text-muted-foreground">{appointment.location}</p>
+                                            <p className="mt-0.5 truncate text-micro text-muted-foreground">{appointment.location}</p>
                                         ) : null}
                                     </button>
                                 ))}

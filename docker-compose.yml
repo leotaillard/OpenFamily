@@ -21,7 +21,6 @@ services:
       - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
-      - ./server/schema.sql:/docker-entrypoint-initdb.d/schema.sql
     healthcheck:
       test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-openfamily}" ]
       interval: 10s
@@ -53,6 +52,21 @@ services:
       VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY}
       VAPID_SUBJECT: ${VAPID_SUBJECT}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      REGISTRATION_ENABLED: ${REGISTRATION_ENABLED:-true}
+      # Optional features documented in .env.example. A variable set in .env
+      # only reaches the server if it is listed here; without these lines,
+      # invitation and password-reset e-mails could never be sent from a
+      # Docker install, however .env was filled. Empty = feature off.
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_SECURE: ${SMTP_SECURE:-false}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      MAIL_FROM: ${MAIL_FROM:-}
+      SUPPORT_EMAIL: ${SUPPORT_EMAIL:-}
+      APP_PUBLIC_URL: ${APP_PUBLIC_URL:-}
+      ANDROID_CERT_SHA256: ${ANDROID_CERT_SHA256:-}
+      ANDROID_PACKAGE_NAME: ${ANDROID_PACKAGE_NAME:-}
     ports:
       - "127.0.0.1:3001:3001"
     depends_on:
@@ -76,6 +90,9 @@ services:
         # works from any device. Set these only to serve the API from a separate origin.
         VITE_API_URL: ${VITE_API_URL:-}
         VITE_WS_URL: ${VITE_WS_URL:-}
+        # Same flag as the server's REGISTRATION_ENABLED: hides the "Sign up"
+        # link so the UI matches what the API accepts.
+        VITE_REGISTRATION_ENABLED: ${REGISTRATION_ENABLED:-true}
     container_name: openfamily-client
     restart: unless-stopped
     logging: *default-logging

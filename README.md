@@ -66,7 +66,7 @@ Connect OpenFamily to your self-hosted ecosystem in one click — no config file
 | App | Type | What is synced |
 |---|---|---|
 | **Mealie** | 🍲 Recipes | Automatic import of all recipes (pagination, API v1 & v2) |
-| **Tandoor** | 🌿 Recipes | Import via the Django REST API |
+| **Tandoor** | 🌿 Recipes, meal plan | Import via the Django REST API (meal plan: "Import from Tandoor" button on the meal planning page) |
 | **Home Assistant** | 🏠 Shopping | Shopping-list sync over WebSocket (modern `todo` entities + legacy) |
 | **Grocy** | 🥦 Shopping & stock | Shopping list and stock synchronization |
 | **Nextcloud** | ☁️ Calendar | CalDAV import with auto-discovery and per-UID deduplication |
@@ -113,6 +113,8 @@ your server URL (e.g. `http://192.168.1.10:3001`, or your HTTPS / Tailscale addr
 
 ### 🐳 Docker (recommended for a server)
 
+> 📘 **Installing on a server for real?** Follow the step-by-step **[server guide](INSTALLATION.md)**: secrets to set, HTTPS with a domain or Tailscale, updates and backups.
+
 ```bash
 cp .env.example .env   # edit your settings
 docker-compose up -d --build
@@ -127,12 +129,23 @@ Verify the stack end-to-end:
 npm run smoke:api
 ```
 
+**Prefer ready-made images?** Every release is published for amd64 and arm64. Create a `docker-compose.override.yml` next to `docker-compose.yml`:
+
+```yaml
+services:
+  server:
+    image: ghcr.io/nexaflowfrance/openfamily-server:1.8.1
+  client:
+    image: ghcr.io/nexaflowfrance/openfamily-client:1.8.1
+```
+
+then run `docker compose pull server client && docker compose up -d`, without `--build`. The image names need their `-server` / `-client` suffix. Build-time options such as `VITE_REGISTRATION_ENABLED` still require building the client yourself.
+
 ### 🛠️ Manual install
 
 ```bash
 npm run install:all
 psql -U postgres -c "CREATE DATABASE openfamily;"
-psql -U postgres -d openfamily -f server/schema.sql
 cp .env.example .env
 npm run dev
 ```

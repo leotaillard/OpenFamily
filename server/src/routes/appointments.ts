@@ -3,9 +3,33 @@ import { query } from '../db';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { toNullIfEmpty } from '../lib/normalize';
 import { broadcast } from '../lib/broadcaster';
+import {
+    RecurrenceFrequency,
+    normalizeRecurrenceFrequency,
+    normalizeRecurrenceInterval,
+    parseNaiveDateTime,
+    formatNaiveDateTime,
+    formatDateOnly,
+    expandRecurringAppointments,
+} from '../lib/appointmentRecurrence';
+import { normalizeReminderMinutes, applyLegacyReminderFlags, legacyReminderFlags } from '../lib/reminders';
+
+// Events copied from a followed calendar (Google, Outlook...) are refreshed
+// from their source: only who takes part, the reminders and the notes are
+// kept locally. Any other change would be overwritten at the next refresh.
+const SUBSCRIBED_EDITABLE_FIELDS = ['family_member_ids', 'reminder_minutes', 'reminder_30min', 'reminder_1hour', 'notes'];
+const subscribedEventRefusal = { success: false, error: 'SUBSCRIBED_EVENT' };
+
 
 const router = Router();
 router.use(authMiddleware);
+
+const normalizeAppointmentColor = (value: unknown): string => {
+    if (typeof value !== 'string') return '#DC4A60';
+
+    const normalized = value.trim().toUpperCase();
+    return /^#[0-9A-F]{6}$/.test(normalized) ? normalized : '#DC4A60';
+};
 
 const ensureMembersBelongToUser = async (memberIds: string[], userId: string) => {
     for (const memberId of memberIds) {
@@ -26,10 +50,18 @@ const enrichAppointmentsWithMembers = async (appointments: any[], userId: string
         [userId]
     );
     const membersById = new Map(membersResult.rows.map((m: any) => [m.id, m]));
+    const subscriptionNames = new Map<string, string>();
+    if (appointments.some((apt) => apt.subscription_id)) {
+        const subs = await query('SELECT id, name FROM calendar_subscriptions WHERE user_id = $1', [userId]);
+        for (const sub of subs.rows) subscriptionNames.set(String(sub.id), sub.name);
+    }
     return appointments.map((apt) => {
         const familyMemberIds: string[] = Array.isArray(apt.family_member_ids) ? apt.family_member_ids : [];
+        const { external_hash: _hash, ...rest } = apt;
         return {
-            ...apt,
+            ...rest,
+            reminder_minutes: normalizeReminderMinutes(apt.reminder_minutes),
+            subscription_name: apt.subscription_id ? subscriptionNames.get(String(apt.subscription_id)) ?? null : null,
             family_member_ids: familyMemberIds,
             family_members_data: familyMemberIds.map((id) => membersById.get(id)).filter(Boolean),
         };
@@ -44,20 +76,97 @@ router.get('/', async (req: AuthRequest, res) => {
         let queryText = 'SELECT * FROM appointments WHERE user_id = $1';
         const params: any[] = [req.userId];
 
+        const nonRecurringConditions: string[] = [];
+        const recurringConditions: string[] = [];
+
         if (start_date) {
             params.push(start_date);
-            queryText += ` AND COALESCE(end_time, start_time) >= $${params.length}`;
+            const parameter = `$${params.length}`;
+
+            nonRecurringConditions.push(
+                `COALESCE(end_time, start_time) >= ${parameter}`
+            );
+            recurringConditions.push(
+                `(recurrence_until IS NULL OR recurrence_until >= (${parameter})::date)`
+            );
         }
 
         if (end_date) {
             params.push(end_date);
-            queryText += ` AND start_time <= $${params.length}`;
+            const parameter = `$${params.length}`;
+
+            nonRecurringConditions.push(`start_time <= ${parameter}`);
+            recurringConditions.push(`start_time <= ${parameter}`);
+        }
+
+        if (nonRecurringConditions.length > 0) {
+            queryText += ` AND (
+                (
+                    recurrence_frequency = 'none'
+                    AND ${nonRecurringConditions.join(' AND ')}
+                )
+                OR
+                (
+                    recurrence_frequency <> 'none'
+                    AND ${recurringConditions.join(' AND ')}
+                )
+            )`;
         }
 
         queryText += ' ORDER BY start_time ASC';
 
         const result = await query(queryText, params);
-        const appointments = await enrichAppointmentsWithMembers(result.rows, req.userId!);
+
+        const exceptionsByAppointment = new Map<string, Map<string, any>>();
+
+        if (start_date && end_date && result.rows.length > 0) {
+            const recurringIds = result.rows
+                .filter((row: any) => row.recurrence_frequency !== 'none')
+                .map((row: any) => row.id);
+
+            if (recurringIds.length > 0) {
+                const exceptionResult = await query(
+                    `SELECT appointment_id, occurrence_date, exception_type, override_data
+                     FROM appointment_recurrence_exceptions
+                     WHERE appointment_id = ANY($1::uuid[])
+                       AND occurrence_date BETWEEN ($2)::date AND ($3)::date`,
+                    [
+                        recurringIds,
+                        String(start_date).slice(0, 10),
+                        String(end_date).slice(0, 10),
+                    ]
+                );
+
+                for (const exception of exceptionResult.rows) {
+                    const appointmentId = String(exception.appointment_id);
+                    const occurrenceDate = String(exception.occurrence_date).slice(0, 10);
+
+                    if (!exceptionsByAppointment.has(appointmentId)) {
+                        exceptionsByAppointment.set(appointmentId, new Map());
+                    }
+
+                    exceptionsByAppointment
+                        .get(appointmentId)!
+                        .set(occurrenceDate, exception);
+                }
+            }
+        }
+
+        const rows =
+            start_date && end_date
+                ? expandRecurringAppointments(
+                    result.rows,
+                    String(start_date),
+                    String(end_date),
+                    exceptionsByAppointment
+                )
+                : result.rows;
+
+        const appointments = await enrichAppointmentsWithMembers(
+            rows,
+            req.userId!
+        );
+
         res.json({ success: true, data: appointments });
     } catch (error) {
         console.error('Get appointments error:', error);
@@ -75,16 +184,44 @@ router.post('/', async (req: AuthRequest, res) => {
             end_time,
             location,
             family_member_ids,
+            reminder_minutes,
             reminder_30min,
             reminder_1hour,
             notes,
+            recurrence_frequency,
+            recurrence_interval,
+            recurrence_until,
+            color,
+            is_all_day,
         } = req.body;
+
+        const reminderMinutes = reminder_minutes !== undefined
+            ? normalizeReminderMinutes(reminder_minutes)
+            : applyLegacyReminderFlags([], reminder_30min, reminder_1hour);
+        const reminderFlags = legacyReminderFlags(reminderMinutes);
 
         const cleanedTitle = typeof title === 'string' ? title.trim() : '';
         const startTime = toNullIfEmpty(start_time);
+        const recurrenceFrequency = normalizeRecurrenceFrequency(recurrence_frequency);
+        const recurrenceInterval = recurrenceFrequency === 'none'
+            ? 1
+            : normalizeRecurrenceInterval(recurrence_interval);
+        const recurrenceUntil = recurrenceFrequency === 'none'
+            ? null
+            : toNullIfEmpty(recurrence_until);
 
         if (!cleanedTitle || !startTime) {
             return res.status(400).json({ success: false, error: 'Title and start_time are required' });
+        }
+
+        if (recurrenceUntil) {
+            const startDate = String(startTime).slice(0, 10);
+            if (String(recurrenceUntil).slice(0, 10) < startDate) {
+                return res.status(400).json({
+                    success: false,
+                    error: 'recurrence_until cannot be before start_time',
+                });
+            }
         }
 
         const memberIds: string[] = Array.isArray(family_member_ids)
@@ -93,8 +230,16 @@ router.post('/', async (req: AuthRequest, res) => {
         await ensureMembersBelongToUser(memberIds, req.userId!);
 
         const result = await query(
-            `INSERT INTO appointments (user_id, title, description, start_time, end_time, location, family_member_ids, reminder_30min, reminder_1hour, notes)
-       VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10) RETURNING *`,
+            `INSERT INTO appointments (
+                user_id, title, description, start_time, end_time, location,
+                family_member_ids, reminder_30min, reminder_1hour, notes,
+                recurrence_frequency, recurrence_interval, recurrence_until, color,
+                is_all_day, reminder_minutes
+            )
+            VALUES (
+                $1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10,
+                $11, $12, $13, $14, $15, $16::integer[]
+            ) RETURNING *`,
             [
                 req.userId,
                 cleanedTitle,
@@ -103,9 +248,15 @@ router.post('/', async (req: AuthRequest, res) => {
                 toNullIfEmpty(end_time),
                 toNullIfEmpty(location),
                 JSON.stringify(memberIds),
-                Boolean(reminder_30min),
-                Boolean(reminder_1hour),
+                reminderFlags.reminder_30min,
+                reminderFlags.reminder_1hour,
                 toNullIfEmpty(notes),
+                recurrenceFrequency,
+                recurrenceInterval,
+                recurrenceUntil,
+                normalizeAppointmentColor(color),
+                Boolean(is_all_day),
+                reminderMinutes,
             ]
         );
 
@@ -126,6 +277,17 @@ router.post('/', async (req: AuthRequest, res) => {
 router.put('/:id', async (req: AuthRequest, res) => {
     try {
         const { id } = req.params;
+        const currentResult = await query(
+            'SELECT subscription_id, reminder_minutes FROM appointments WHERE id = $1 AND user_id = $2',
+            [id, req.userId]
+        );
+        if (currentResult.rows.length === 0) {
+            return res.status(404).json({ success: false, error: 'Appointment not found' });
+        }
+        const current = currentResult.rows[0];
+        const body: Record<string, any> = current.subscription_id
+            ? Object.fromEntries(Object.entries(req.body ?? {}).filter(([key]) => SUBSCRIBED_EDITABLE_FIELDS.includes(key)))
+            : req.body ?? {};
         const {
             title,
             description,
@@ -133,10 +295,16 @@ router.put('/:id', async (req: AuthRequest, res) => {
             end_time,
             location,
             family_member_ids,
+            reminder_minutes,
             reminder_30min,
             reminder_1hour,
             notes,
-        } = req.body;
+            recurrence_frequency,
+            recurrence_interval,
+            recurrence_until,
+            color,
+            is_all_day,
+        } = body;
 
         const updates: string[] = [];
         const values: any[] = [];
@@ -183,16 +351,45 @@ router.put('/:id', async (req: AuthRequest, res) => {
             updates.push(`family_member_ids = $${values.length}::jsonb`);
         }
 
-        if (reminder_30min !== undefined) {
-            pushUpdate('reminder_30min', Boolean(reminder_30min));
-        }
-
-        if (reminder_1hour !== undefined) {
-            pushUpdate('reminder_1hour', Boolean(reminder_1hour));
+        if (reminder_minutes !== undefined || reminder_30min !== undefined || reminder_1hour !== undefined) {
+            const minutes = reminder_minutes !== undefined
+                ? normalizeReminderMinutes(reminder_minutes)
+                : applyLegacyReminderFlags(normalizeReminderMinutes(current.reminder_minutes), reminder_30min, reminder_1hour);
+            const flags = legacyReminderFlags(minutes);
+            values.push(minutes);
+            updates.push(`reminder_minutes = $${values.length}::integer[]`);
+            pushUpdate('reminder_30min', flags.reminder_30min);
+            pushUpdate('reminder_1hour', flags.reminder_1hour);
         }
 
         if (notes !== undefined) {
             pushUpdate('notes', toNullIfEmpty(notes));
+        }
+
+        if (is_all_day !== undefined) {
+            pushUpdate('is_all_day', Boolean(is_all_day));
+        }
+
+        if (color !== undefined) {
+            pushUpdate('color', normalizeAppointmentColor(color));
+        }
+
+        if (recurrence_frequency !== undefined) {
+            const frequency = normalizeRecurrenceFrequency(recurrence_frequency);
+            pushUpdate('recurrence_frequency', frequency);
+
+            if (frequency === 'none') {
+                pushUpdate('recurrence_interval', 1);
+                pushUpdate('recurrence_until', null);
+            }
+        }
+
+        if (recurrence_interval !== undefined && recurrence_frequency !== 'none') {
+            pushUpdate('recurrence_interval', normalizeRecurrenceInterval(recurrence_interval));
+        }
+
+        if (recurrence_until !== undefined && recurrence_frequency !== 'none') {
+            pushUpdate('recurrence_until', toNullIfEmpty(recurrence_until));
         }
 
         if (updates.length === 0) {
@@ -224,10 +421,204 @@ router.put('/:id', async (req: AuthRequest, res) => {
     }
 });
 
+// Update one occurrence from a recurring appointment
+router.put('/:id/occurrences/:date', async (req: AuthRequest, res) => {
+    try {
+        const { id, date } = req.params;
+
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+            return res.status(400).json({ success: false, error: 'Invalid occurrence date' });
+        }
+
+        const appointmentResult = await query(
+            `SELECT *
+             FROM appointments
+             WHERE id = $1 AND user_id = $2`,
+            [id, req.userId]
+        );
+
+        if (appointmentResult.rows.length === 0) {
+            return res.status(404).json({ success: false, error: 'Appointment not found' });
+        }
+
+        const appointment = appointmentResult.rows[0];
+
+        if (appointment.subscription_id) {
+            return res.status(409).json(subscribedEventRefusal);
+        }
+
+        if (appointment.recurrence_frequency === 'none') {
+            return res.status(400).json({
+                success: false,
+                error: 'Appointment is not recurring',
+            });
+        }
+
+        const allowedFields = [
+            'title',
+            'description',
+            'start_time',
+            'end_time',
+            'location',
+            'family_member_ids',
+            'reminder_30min',
+            'reminder_1hour',
+            'reminder_minutes',
+            'notes',
+            'color',
+            'is_all_day',
+        ];
+
+        const overrideData: Record<string, any> = {};
+
+        for (const field of allowedFields) {
+            if (req.body[field] !== undefined) {
+                overrideData[field] = req.body[field];
+            }
+        }
+        if (overrideData.reminder_minutes !== undefined) {
+            overrideData.reminder_minutes = normalizeReminderMinutes(overrideData.reminder_minutes);
+        }
+
+        if (overrideData.title !== undefined) {
+            const cleanedTitle =
+                typeof overrideData.title === 'string'
+                    ? overrideData.title.trim()
+                    : '';
+
+            if (!cleanedTitle) {
+                return res.status(400).json({
+                    success: false,
+                    error: 'Title cannot be empty',
+                });
+            }
+
+            overrideData.title = cleanedTitle;
+        }
+
+        if (overrideData.color !== undefined) {
+            overrideData.color = normalizeAppointmentColor(overrideData.color);
+        }
+
+        if (overrideData.family_member_ids !== undefined) {
+            const memberIds: string[] = Array.isArray(overrideData.family_member_ids)
+                ? overrideData.family_member_ids.filter(
+                    (memberId: any) =>
+                        typeof memberId === 'string' && memberId.trim()
+                )
+                : [];
+
+            await ensureMembersBelongToUser(memberIds, req.userId!);
+            overrideData.family_member_ids = memberIds;
+        }
+
+        await query(
+            `INSERT INTO appointment_recurrence_exceptions
+                (appointment_id, occurrence_date, exception_type, override_data)
+             VALUES ($1, $2::date, 'override', $3::jsonb)
+             ON CONFLICT (appointment_id, occurrence_date)
+             DO UPDATE SET
+                exception_type = 'override',
+                override_data = EXCLUDED.override_data`,
+            [id, date, JSON.stringify(overrideData)]
+        );
+
+        broadcast(req.userId!, {
+            type: 'update',
+            entity: 'appointments',
+            action: 'updated',
+        });
+
+        res.json({
+            success: true,
+            message: 'Appointment occurrence updated',
+        });
+    } catch (error) {
+        if (error instanceof Error && error.message === 'INVALID_MEMBER') {
+            return res.status(400).json({
+                success: false,
+                error: 'Family member not found',
+            });
+        }
+
+        console.error('Update appointment occurrence error:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Internal server error',
+        });
+    }
+});
+
+// Delete one occurrence from a recurring appointment
+router.delete('/:id/occurrences/:date', async (req: AuthRequest, res) => {
+    try {
+        const { id, date } = req.params;
+
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+            return res.status(400).json({ success: false, error: 'Invalid occurrence date' });
+        }
+
+        const appointmentResult = await query(
+            `SELECT id, recurrence_frequency, subscription_id
+             FROM appointments
+             WHERE id = $1 AND user_id = $2`,
+            [id, req.userId]
+        );
+
+        if (appointmentResult.rows.length === 0) {
+            return res.status(404).json({ success: false, error: 'Appointment not found' });
+        }
+
+        if (appointmentResult.rows[0].subscription_id) {
+            return res.status(409).json(subscribedEventRefusal);
+        }
+
+        if (appointmentResult.rows[0].recurrence_frequency === 'none') {
+            return res.status(400).json({
+                success: false,
+                error: 'Appointment is not recurring',
+            });
+        }
+
+        await query(
+            `INSERT INTO appointment_recurrence_exceptions
+                (appointment_id, occurrence_date, exception_type, override_data)
+             VALUES ($1, $2::date, 'skip', NULL)
+             ON CONFLICT (appointment_id, occurrence_date)
+             DO UPDATE SET
+                exception_type = 'skip',
+                override_data = NULL`,
+            [id, date]
+        );
+
+        broadcast(req.userId!, {
+            type: 'update',
+            entity: 'appointments',
+            action: 'updated',
+        });
+
+        res.json({
+            success: true,
+            message: 'Appointment occurrence deleted',
+        });
+    } catch (error) {
+        console.error('Delete appointment occurrence error:', error);
+        res.status(500).json({ success: false, error: 'Internal server error' });
+    }
+});
+
 // Delete appointment
 router.delete('/:id', async (req: AuthRequest, res) => {
     try {
         const { id } = req.params;
+
+        const subscribed = await query(
+            'SELECT 1 FROM appointments WHERE id = $1 AND user_id = $2 AND subscription_id IS NOT NULL',
+            [id, req.userId]
+        );
+        if (subscribed.rows.length > 0) {
+            return res.status(409).json(subscribedEventRefusal);
+        }
 
         const result = await query(
             'DELETE FROM appointments WHERE id = $1 AND user_id = $2 RETURNING id',

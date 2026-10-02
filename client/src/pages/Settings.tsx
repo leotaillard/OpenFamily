@@ -5,6 +5,7 @@ import { api } from '../lib/api';
 import { Download, Upload, CheckCircle, AlertCircle, Loader2, Bell, BellOff, Globe, Languages, Camera, Trash2, MonitorPlay, Sparkles, LayoutGrid, Server, Tags, ArrowUp, ArrowDown, Plus, Heart, Star } from 'lucide-react';
 import { Card, CardContent, Button, Input, Select } from '../components/ui';
 import { LanguageSwitcher } from '../components/ui/LanguageSwitcher';
+import RegionalPreferences from '../components/app/RegionalPreferences';
 import { useNotifications } from '../hooks/useNotifications';
 import { useAuth } from '../contexts/AuthContext';
 import { isNative, getServerUrl, clearServerUrl } from '../lib/serverConfig';
@@ -13,6 +14,8 @@ import { refreshAiStatus } from '../lib/aiStatus';
 import { aiErrorKey } from '../components/app/MagicInput';
 
 interface ImportCounts {
+    family_settings?: number;
+    account_preferences?: number;
     family_members?: number;
     tasks?: number;
     recipes?: number;
@@ -20,8 +23,21 @@ interface ImportCounts {
     budget_entries?: number;
     budget_limits?: number;
     shopping_items?: number;
+    shopping_list_templates?: number;
     appointments?: number;
+    appointment_recurrence_exceptions?: number;
     schedule_entries?: number;
+    schedule_entry_members?: number;
+    schedule_entry_exceptions?: number;
+    reward_transactions?: number;
+    reward_settings?: number;
+    reward_goals?: number;
+    family_notes?: number;
+    recurring_expenses?: number;
+    recurring_expense_logs?: number;
+    kakeibo_months?: number;
+    family_posts?: number;
+    family_post_seen?: number;
 }
 
 const CURRENCIES = [
@@ -38,18 +54,20 @@ const CURRENCIES = [
     { code: 'BRL', label: 'Brazilian Real (R$)' },
 ];
 
-type AiProvider = 'ollama' | 'openai' | 'anthropic';
+type AiProvider = 'ollama' | 'openai' | 'anthropic' | 'gemini';
 
 const AI_MODEL_PLACEHOLDERS: Record<AiProvider, string> = {
     ollama: 'llama3.1',
     openai: 'gpt-4o-mini',
     anthropic: 'claude-opus-4-8',
+    gemini: 'gemini-3.8-flash',
 };
 
 const AI_BASE_URL_PLACEHOLDERS: Record<AiProvider, string> = {
     ollama: 'http://localhost:11434',
     openai: 'https://api.openai.com',
     anthropic: '',
+    gemini: '',
 };
 
 interface AiSettingsData {
@@ -122,7 +140,7 @@ const AiAssistantCard: React.FC<{ isParent: boolean }> = ({ isParent }) => {
             const trimmedKey = apiKey.trim();
             const response = await api.put<{ success: boolean; data: AiSettingsData }>('/api/ai/settings', {
                 provider,
-                base_url: provider === 'anthropic' ? null : baseUrl.trim() || null,
+                base_url: provider === 'anthropic' || provider === 'gemini' ? null : baseUrl.trim() || null,
                 // '' keeps the stored key, explicit null clears it.
                 api_key: trimmedKey ? trimmedKey : apiKeyCleared ? null : '',
                 model: model.trim(),
@@ -149,7 +167,7 @@ const AiAssistantCard: React.FC<{ isParent: boolean }> = ({ isParent }) => {
         try {
             const response = await api.post<{ success: boolean; message?: string }>('/api/ai/test', {
                 provider,
-                base_url: provider === 'anthropic' ? undefined : baseUrl.trim() || undefined,
+                base_url: provider === 'anthropic' || provider === 'gemini' ? undefined : baseUrl.trim() || undefined,
                 api_key: apiKey.trim() || undefined,
                 model: model.trim() || undefined,
             });
@@ -165,6 +183,7 @@ const AiAssistantCard: React.FC<{ isParent: boolean }> = ({ isParent }) => {
         { value: 'ollama', label: t('ai:settings.providers.ollama') },
         { value: 'openai', label: t('ai:settings.providers.openai') },
         { value: 'anthropic', label: t('ai:settings.providers.anthropic') },
+        { value: 'gemini', label: t('ai:settings.providers.gemini') },
     ];
 
     return (
@@ -209,7 +228,7 @@ const AiAssistantCard: React.FC<{ isParent: boolean }> = ({ isParent }) => {
                                     )}
                                 </div>
 
-                                {provider !== 'anthropic' && (
+                                {provider !== 'anthropic' && provider !== 'gemini' && (
                                     <Input
                                         label={t('ai:settings.baseUrl')}
                                         value={baseUrl}
@@ -229,7 +248,13 @@ const AiAssistantCard: React.FC<{ isParent: boolean }> = ({ isParent }) => {
                                                 setApiKey(e.target.value);
                                                 setTestResult(null);
                                             }}
-                                            placeholder={hasApiKey && !apiKeyCleared ? t('ai:settings.keyKept') : 'sk-…'}
+                                            placeholder={
+                                                hasApiKey && !apiKeyCleared
+                                                    ? t('ai:settings.keyKept')
+                                                    : provider === 'gemini'
+                                                        ? 'AIza…'
+                                                        : 'sk-…'
+                                            }
                                             disabled={!isParent}
                                             autoComplete="off"
                                         />
@@ -828,6 +853,9 @@ const Settings: React.FC = () => {
                     </div>
                 </CardContent>
             </Card>
+
+            {/* First day of the week */}
+            <RegionalPreferences />
 
             {/* Server (native app only) */}
             {isNative() && (

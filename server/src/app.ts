@@ -18,12 +18,14 @@ import dataTransferRoutes from './routes/dataTransfer';
 import notificationsRoutes from './routes/notifications';
 import familyInvitesRoutes from './routes/familyInvites';
 import calendarRoutes from './routes/calendar';
+import calendarSourcesRoutes from './routes/calendarSources';
 import integrationsRoutes from './routes/integrations';
 import rewardsRoutes from './routes/rewards';
 import notesRoutes from './routes/notes';
 import aiRoutes from './routes/ai';
 import categoriesRoutes from './routes/categories';
 import kakeiboRoutes from './routes/kakeibo';
+import postsRoutes from './routes/posts';
 import { loadEnv } from './config/loadEnv';
 import logger from './lib/logger';
 
@@ -106,7 +108,19 @@ app.use(cors({
     credentials: true,
 }));
 
-app.use(express.json({ limit: '1mb' }));
+// Family posts carry a resized photo inline (up to 2 MB as a data URI), so
+// that router gets a wider body limit than the rest of the API.
+app.use('/api/posts', express.json({ limit: '3mb' }));
+// The data import parses a whole family export with its own, much larger limit
+// inside its router, after the login and parent checks. It must not be parsed
+// here: this runs before authentication, so any anonymous request could make
+// the server buffer and parse a body of that size.
+const defaultJsonParser = express.json({ limit: '1mb' });
+app.use((req, res, next) => (
+    req.path.replace(/\/+$/, '').toLowerCase() === '/api/data/import'
+        ? next()
+        : defaultJsonParser(req, res, next)
+));
 app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 
 // Request logging
@@ -178,6 +192,8 @@ app.use('/api/planning', planningRoutes);
 app.use('/api/data', dataTransferRoutes);
 app.use('/api/notifications', notificationsRoutes);
 app.use('/api/invites', familyInvitesRoutes);
+// Outside calendars (.ics import, followed addresses) before the public feed routes.
+app.use('/api/calendar', calendarSourcesRoutes);
 app.use('/api/calendar', calendarRoutes);
 app.use('/api/integrations', integrationsRoutes);
 app.use('/api/rewards', rewardsRoutes);
@@ -186,6 +202,7 @@ app.use('/api/ai', aiRoutes);
 app.use('/api/categories', categoriesRoutes);
 app.use('/api/kakeibo', kakeiboRoutes);
 
+app.use('/api/posts', postsRoutes);
 // Static client (native Windows install): serve the built SPA from the same origin
 // as the API, so the app is reachable from any device on the LAN via http://<ip>:3000.
 if (process.env.SERVE_CLIENT_DIR) {
@@ -212,7 +229,17 @@ app.use((err: any, req: express.Request, res: express.Response, _next: express.N
         stack: err instanceof Error && process.env.NODE_ENV !== 'production' ? err.stack : undefined,
     });
 
-    res.status(500).json({ success: false, error: 'Internal server error' });
+    // body-parser rejections (oversized or malformed body) carry their own
+    // 4xx status; everything else is a genuine server failure.
+    const status = typeof err?.status === 'number' && err.status >= 400 && err.status < 500
+        ? err.status
+        : 500;
+    res.status(status).json({
+        success: false,
+        error: status === 413 ? 'Request entity too large'
+            : status === 400 ? 'Malformed request body'
+            : 'Internal server error',
+    });
 });
 
 export default app;

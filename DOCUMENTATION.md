@@ -241,11 +241,10 @@ OpenFamily/
 ├── server/                    # API backend Express
 │   ├── Dockerfile             # Image Docker du serveur
 │   ├── package.json
-│   ├── schema.sql             # Schéma complet de la base de données
 │   └── src/
 │       ├── index.ts           # Point d'entrée (HTTP + WebSocket)
 │       ├── app.ts             # Configuration Express + routes
-│       ├── db.ts              # Pool de connexions PostgreSQL
+│       ├── db.ts              # Pool de connexions PostgreSQL + schéma/migrations
 │       ├── config/
 │       │   └── loadEnv.ts     # Chargement des variables d'environnement
 │       ├── lib/
@@ -278,7 +277,8 @@ OpenFamily/
 │   └── smoke-api.sh           # Script de test bout-en-bout de l'API
 ├── docker-compose.yml         # Orchestration des services
 ├── package.json               # Package racine (workspaces npm)
-└── INSTALLATION.md            # Guide d'installation
+├── INSTALLATION.md            # Server installation guide (English)
+└── INSTALLATION.fr.md         # Guide d'installation serveur (français)
 ```
 
 ---

@@ -3,15 +3,19 @@ FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-# Copy package files
-COPY package.json ./
+# Every workspace manifest plus the lockfile. npm ci needs the complete
+# workspace to validate the lockfile, and without the lockfile each build
+# resolved whatever versions the registry served that day instead of the ones
+# the project tests and audits.
+COPY package.json package-lock.json ./
 COPY client/package.json ./client/
+COPY server/package.json ./server/
 COPY shared/package.json ./shared/
 
-# Install dependencies
-RUN npm install --legacy-peer-deps
-RUN cd client && npm install --legacy-peer-deps
-RUN cd shared && npm install --legacy-peer-deps
+# --include=dev keeps typescript and vite installed even when the build
+# environment sets NODE_ENV=production, as many hosting platforms do; without
+# it the build stopped at "tsc: not found".
+RUN npm ci --include=dev --workspace=client --workspace=shared --include-workspace-root
 
 # Copy source code
 COPY shared ./shared
@@ -27,6 +31,10 @@ ARG VITE_API_URL=
 ARG VITE_WS_URL=
 ENV VITE_API_URL=$VITE_API_URL
 ENV VITE_WS_URL=$VITE_WS_URL
+# Set to false to hide the "Sign up" link once the family is set up. Read at build
+# time by Vite, so changing it requires rebuilding the image.
+ARG VITE_REGISTRATION_ENABLED=true
+ENV VITE_REGISTRATION_ENABLED=$VITE_REGISTRATION_ENABLED
 RUN cd client && npm run build
 
 # Production stage

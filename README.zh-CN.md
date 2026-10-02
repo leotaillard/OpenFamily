@@ -110,6 +110,8 @@ OpenFamily 还提供原生 **Android 应用**——它是一个连接到**你自
 
 ### 🐳 Docker（推荐用于服务器）
 
+> 📘 **正式部署到服务器？** 请按照分步 **[服务器指南（英文）](INSTALLATION.md)** 操作：需要设置的密钥、通过域名或 Tailscale 启用 HTTPS、更新与备份。
+
 ```bash
 cp .env.example .env   # 编辑配置
 docker-compose up -d --build
@@ -124,12 +126,23 @@ docker-compose up -d --build
 npm run smoke:api
 ```
 
+**想直接使用现成镜像？** 每个版本都会发布 amd64 和 arm64 镜像。在 `docker-compose.yml` 旁边创建 `docker-compose.override.yml`：
+
+```yaml
+services:
+  server:
+    image: ghcr.io/nexaflowfrance/openfamily-server:1.8.1
+  client:
+    image: ghcr.io/nexaflowfrance/openfamily-client:1.8.1
+```
+
+然后运行 `docker compose pull server client && docker compose up -d`（不要加 `--build`）。镜像名必须带 `-server` / `-client` 后缀。`VITE_REGISTRATION_ENABLED` 等构建期选项仍需自行构建客户端。
+
 ### 🛠️ 手动安装
 
 ```bash
 npm run install:all
 psql -U postgres -c "CREATE DATABASE openfamily;"
-psql -U postgres -d openfamily -f server/schema.sql
 cp .env.example .env
 npm run dev
 ```

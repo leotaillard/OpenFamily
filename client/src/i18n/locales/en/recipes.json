@@ -24,6 +24,14 @@
   "allCategories": "All categories",
   "allDifficulties": "All difficulties",
   "anyDuration": "Any duration",
+  "filters": {
+    "toggle": "Filters",
+    "clear": "Clear filters",
+    "ingredientsPlaceholder": "I have… (an ingredient, then Enter)",
+    "ingredientsMore": "Add an ingredient",
+    "ingredientsHelp": "Only recipes that contain all of these ingredients are shown.",
+    "removeIngredient": "Remove {{name}}"
+  },
   "empty": {
     "none": "No recipes yet. Create your first recipe!",
     "noMatch": "No recipe matches your search."
@@ -93,7 +101,8 @@
     "duplicates_other": "{{count}} were already there.",
     "errorTitle": "Could not add",
     "error": "These ingredients could not be added. Please try again.",
-    "original": "Recipe: {{line}}"
+    "original": "Recipe: {{line}}",
+    "selectedCount": "{{count}} of {{total}} selected"
   },
   "refine": {
     "button": "Refine with AI",
@@ -119,6 +128,7 @@
   "errors": {
     "load": "Unable to load recipes.",
     "save": "Unable to save this recipe.",
-    "delete": "Unable to delete this recipe."
+    "delete": "Unable to delete this recipe.",
+    "invalidImage": "This image link is not valid. Use a web address starting with https:// or leave the field empty."
   }
 }

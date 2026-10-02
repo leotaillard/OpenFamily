@@ -24,6 +24,14 @@
   "allCategories": "Todas as categorias",
   "allDifficulties": "Todas as dificuldades",
   "anyDuration": "Qualquer tempo",
+  "filters": {
+    "toggle": "Filtros",
+    "clear": "Limpar filtros",
+    "ingredientsPlaceholder": "Eu tenho… (um ingrediente e Enter)",
+    "ingredientsMore": "Adicionar um ingrediente",
+    "ingredientsHelp": "Só aparecem as receitas que contêm todos estes ingredientes.",
+    "removeIngredient": "Remover {{name}}"
+  },
   "empty": {
     "none": "Nenhuma receita ainda. Crie sua primeira receita!",
     "noMatch": "Nenhuma receita corresponde à sua busca."
@@ -93,7 +101,8 @@
     "duplicates_other": "{{count}} já estavam na lista.",
     "errorTitle": "Falha ao adicionar",
     "error": "Não foi possível adicionar estes ingredientes. Tente novamente.",
-    "original": "Receita: {{line}}"
+    "original": "Receita: {{line}}",
+    "selectedCount": "{{count}} de {{total}} selecionados"
   },
   "refine": {
     "button": "Refinar com IA",
@@ -119,6 +128,7 @@
   "errors": {
     "load": "Não foi possível carregar as receitas.",
     "save": "Não foi possível salvar esta receita.",
-    "delete": "Não foi possível excluir esta receita."
+    "delete": "Não foi possível excluir esta receita.",
+    "invalidImage": "Este link de imagem não é válido. Use um endereço web que comece com https:// ou deixe o campo vazio."
   }
 }

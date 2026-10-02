@@ -4,7 +4,7 @@ import { useWebSocketUpdates } from '../hooks/useWebSocketUpdates';
 import { api } from '../lib/api';
 import { useAuth, DEFAULT_DASHBOARD_PREFS, type DashboardPrefs, type DashboardWidget } from '../contexts/AuthContext';
 import { formatCurrency } from '../lib/utils';
-import { intlLocale, dateLocale } from '../i18n/format';
+import { intlLocale, dateLocale, isoWeekdayAtOffset, weekStartsOn } from '../i18n/format';
 import {
     ShoppingCart, CheckSquare, Calendar, Wallet, AlertCircle, ChevronRight, Clock,
     SlidersHorizontal, Eye, EyeOff, ArrowUp, ArrowDown, CalendarDays,
@@ -25,6 +25,7 @@ interface DashboardStats {
 
 interface Appointment {
     id: string;
+    occurrence_id?: string;
     title: string;
     description?: string;
     start_time: string;
@@ -43,6 +44,22 @@ interface PlanningEntry {
     location?: string;
 }
 
+interface LatestFamilyPost {
+    id: string;
+    author_name: string;
+    author_avatar?: string | null;
+    content?: string | null;
+    image_url?: string | null;
+    link_url?: string | null;
+    created_at: string;
+    seen_by: Array<{
+        id: string;
+        name: string;
+        seen_at: string;
+    }>;
+    is_seen: boolean;
+}
+
 const Dashboard: React.FC = () => {
     const { t } = useTranslation(['dashboard', 'common', 'notes']);
     const { user, isModuleEnabled, dashboardPrefs, updateDashboardPrefs } = useAuth();
@@ -51,6 +68,7 @@ const Dashboard: React.FC = () => {
     const [appointments, setAppointments] = useState<Appointment[]>([]);
     const [planning, setPlanning] = useState<PlanningEntry[]>([]);
     const [notes, setNotes] = useState<FamilyNote[]>([]);
+    const [latestPost, setLatestPost] = useState<LatestFamilyPost | null>(null);
     const [loading, setLoading] = useState(true);
     const [customizing, setCustomizing] = useState(false);
     const navigate = useNavigate();
@@ -62,8 +80,9 @@ const Dashboard: React.FC = () => {
         weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
     }).format(new Date());
 
-    // Monday-based week, matching the Planning page.
-    const weekStart = useMemo(() => startOfWeek(new Date(), { weekStartsOn: 1 }), []);
+    // Same first day as the Planning page: the member's choice, or regional.
+    const firstDay = weekStartsOn();
+    const weekStart = useMemo(() => startOfWeek(new Date(), { weekStartsOn: firstDay }), [firstDay]);
 
     useEffect(() => { void loadAll(); }, [agendaView]);
     useWebSocketUpdates('tasks', () => { void loadAll(); });
@@ -72,6 +91,22 @@ const Dashboard: React.FC = () => {
     useWebSocketUpdates('budget', () => { void loadAll(); });
     useWebSocketUpdates('planning', () => { void loadPlanning(); });
     useWebSocketUpdates('notes', () => { void loadNotes(); });
+    useWebSocketUpdates('posts', () => { void loadLatestPost(); });
+
+    const loadLatestPost = async () => {
+        try {
+            const res = await api.get<{
+                success: boolean;
+                data: LatestFamilyPost | null;
+            }>('/api/posts/latest');
+
+            if (res.success) {
+                setLatestPost(res.data);
+            }
+        } catch (e) {
+            console.error('Latest post load error:', e);
+        }
+    };
 
     const loadNotes = async () => {
         try {
@@ -97,6 +132,7 @@ const Dashboard: React.FC = () => {
     const loadAll = async () => {
         try {
             void loadNotes();
+            void loadLatestPost();
             void loadPlanning();
             const [statsRes, apptRes] = await Promise.all([
                 api.get<{ success: boolean; data: DashboardStats }>('/api/dashboard'),
@@ -226,7 +262,7 @@ const Dashboard: React.FC = () => {
                             )}
                             <div className="rounded-card border border-border bg-card divide-y divide-border overflow-hidden">
                                 {group.items.map((appt) => (
-                                    <div key={appt.id} className="grid grid-cols-[72px_1fr_auto] gap-4 items-center px-5 py-4">
+                                    <div key={appt.occurrence_id || appt.id} className="grid grid-cols-[72px_1fr_auto] gap-4 items-center px-5 py-4">
                                         <div className="font-serif text-body text-muted-foreground tabular-nums">
                                             {fmtTime(appt.start_time)}
                                         </div>
@@ -333,7 +369,7 @@ const Dashboard: React.FC = () => {
                             key={card.title}
                             onClick={() => navigate(card.href)}
                             className={[
-                                'group flex flex-col items-start gap-3 p-5 text-left transition-colors hover:bg-surface-2',
+                                'group flex min-w-0 flex-col items-start gap-3 p-4 text-left transition-colors hover:bg-surface-2 sm:p-5',
                                 i < 2 ? 'border-b lg:border-b-0' : '',
                                 i % 2 === 0 ? 'border-r border-border' : '',
                                 i < visible.length - 1 ? 'lg:border-r lg:border-border' : '',
@@ -344,7 +380,9 @@ const Dashboard: React.FC = () => {
                                 <Icon className="h-4 w-4" />
                                 {card.title}
                             </span>
-                            <span className={`font-serif text-4xl leading-none tracking-tight ${(card as { flag?: boolean }).flag ? 'text-primary' : 'text-foreground'}`}>
+                            {/* An amount is twice as long as a count: smaller on a phone so
+                                "229,40 €" stays on one line in a half-width tile. */}
+                            <span className={`whitespace-nowrap font-serif leading-none tracking-tight ${typeof card.value === 'string' ? 'text-2xl sm:text-4xl' : 'text-4xl'} ${(card as { flag?: boolean }).flag ? 'text-primary' : 'text-foreground'}`}>
                                 {card.value}
                             </span>
                         </button>
@@ -357,7 +395,7 @@ const Dashboard: React.FC = () => {
     const renderPlanning = () => {
         const days = Array.from({ length: 7 }, (_, i) => ({
             date: addDays(weekStart, i),
-            dayOfWeek: i + 1,
+            dayOfWeek: isoWeekdayAtOffset(i),
         })).map((day) => ({
             ...day,
             items: planning.filter((entry) => entry.day_of_week === day.dayOfWeek),
@@ -411,10 +449,162 @@ const Dashboard: React.FC = () => {
         );
     };
 
+    const markLatestPostSeen = async () => {
+        if (!latestPost || latestPost.is_seen) return;
+
+        try {
+            await api.post(
+                `/api/posts/${latestPost.id}/seen`,
+                {}
+            );
+            void loadLatestPost();
+        } catch (e) {
+            console.error(
+                'Mark latest post seen error:',
+                e
+            );
+        }
+    };
+
     const renderNotes = () => (
-        <section key="notes">
-            <h2 className="font-serif text-h2 mb-4">{t('notes:title')}</h2>
-            <FamilyNotes notes={notes} onChanged={() => void loadNotes()} />
+        <section key="notes" className="space-y-6">
+            {latestPost && (
+                <div
+                    className={`rounded-card border p-5 ${
+                        latestPost.is_seen
+                            ? 'border-border bg-card'
+                            : 'border-primary/30 bg-primary-soft/10'
+                    }`}
+                >
+                    <div className="mb-3 flex items-center justify-between gap-3">
+                        <h2 className="font-serif text-h2">
+                            {t('dashboard:latestPost.title')}
+                        </h2>
+
+                        <button
+                            type="button"
+                            onClick={() => navigate('/posts')}
+                            className="text-caption font-medium text-primary hover:underline"
+                        >
+                            {t('dashboard:latestPost.viewAll')}
+                        </button>
+                    </div>
+
+                    <div className="flex items-start gap-3">
+                        {latestPost.author_avatar ? (
+                            <img
+                                src={latestPost.author_avatar}
+                                alt={latestPost.author_name}
+                                className="h-9 w-9 shrink-0 rounded-full object-cover"
+                            />
+                        ) : (
+                            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary-soft text-caption font-semibold text-primary">
+                                {latestPost.author_name.charAt(0) || '?'}
+                            </div>
+                        )}
+
+                        <div className="min-w-0 flex-1">
+                            <p className="text-caption font-semibold text-foreground">
+                                {latestPost.author_name}
+                            </p>
+
+                            <p className="text-micro text-muted-foreground">
+                                {new Intl.DateTimeFormat(
+                                    undefined,
+                                    {
+                                        dateStyle: 'medium',
+                                        timeStyle: 'short',
+                                    }
+                                ).format(
+                                    new Date(
+                                        latestPost.created_at
+                                    )
+                                )}
+                            </p>
+
+                            {latestPost.content && (
+                                <p className="mt-3 whitespace-pre-wrap break-words text-body">
+                                    {latestPost.content}
+                                </p>
+                            )}
+
+                            {latestPost.image_url && (
+                                <img
+                                    src={latestPost.image_url}
+                                    alt=""
+                                    className="mt-3 max-h-64 w-full rounded-card border border-border bg-surface-2 object-contain"
+                                />
+                            )}
+
+                            {latestPost.link_url && (
+                                <a
+                                    href={latestPost.link_url}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="mt-3 block truncate text-caption text-primary hover:underline"
+                                >
+                                    {latestPost.link_url}
+                                </a>
+                            )}
+
+                            <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+                                <p className="text-micro text-muted-foreground">
+                                    {latestPost.seen_by.length
+                                        ? t(
+                                              'dashboard:latestPost.seenBy',
+                                              {
+                                                  names: latestPost.seen_by
+                                                      .map(
+                                                          (
+                                                              person
+                                                          ) =>
+                                                              person.name
+                                                      )
+                                                      .join(', '),
+                                              }
+                                          )
+                                        : t(
+                                              'dashboard:latestPost.notSeen'
+                                          )}
+                                </p>
+
+                                <button
+                                    type="button"
+                                    disabled={
+                                        latestPost.is_seen
+                                    }
+                                    onClick={() =>
+                                        void markLatestPostSeen()
+                                    }
+                                    className={`rounded-input px-3 py-1.5 text-caption font-medium ${
+                                        latestPost.is_seen
+                                            ? 'text-success'
+                                            : 'bg-primary-soft text-primary'
+                                    }`}
+                                >
+                                    {latestPost.is_seen
+                                        ? t(
+                                              'dashboard:latestPost.seen'
+                                          )
+                                        : t(
+                                              'dashboard:latestPost.markSeen'
+                                          )}
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            <div>
+                <h2 className="font-serif text-h2 mb-4">
+                    {t('notes:title')}
+                </h2>
+                <FamilyNotes
+                    notes={notes}
+                    onChanged={() => void loadNotes()}
+                />
+            </div>
         </section>
     );
 
