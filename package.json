@@ -1,6 +1,6 @@
 {
   "name": "openfamily",
-  "version": "1.8.1",
+  "version": "1.8.2",
   "description": "Application open source pour gérer la vie de famille",
   "private": true,
   "workspaces": [
@@ -34,7 +34,9 @@
     "@babel/core": "^7.29.6",
     "esbuild": "^0.28.1",
     "body-parser": "^1.20.6",
-    "qs": "^6.16.0"
+    "qs": "^6.16.0",
+    "postcss-selector-parser": "7.1.6",
+    "uuid": "11.1.1"
   },
   "engines": {
     "node": ">=20.0.0",
